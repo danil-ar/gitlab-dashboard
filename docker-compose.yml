@@ -1,0 +1,27 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      args:
+        REGISTRY: ${REGISTRY:-}
+        pip_index_url: ${PIP_INDEX_URL:-https://pypi.org/simple}
+        pip_trusted_host: ${PIP_TRUSTED_HOST:-}
+    env_file: .env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        REGISTRY: ${REGISTRY:-}
+    ports:
+      - "8085:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
