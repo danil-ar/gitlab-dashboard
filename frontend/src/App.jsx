@@ -65,6 +65,20 @@ function PipelineStatus({ pipeline }) {
   );
 }
 
+function ThreadsStatus({ stats }) {
+  if (!stats || stats.total === 0) return null;
+  const allResolved = stats.resolved === stats.total;
+  return (
+    <span
+      title={`${stats.resolved} of ${stats.total} threads resolved`}
+      className={`flex items-center gap-1 text-xs ${allResolved ? "text-green-600" : "text-gray-500"}`}
+    >
+      <span>{allResolved ? "✓" : "◔"}</span>
+      {stats.resolved}/{stats.total} threads
+    </span>
+  );
+}
+
 function MRCard({ mr, currentUserId }) {
   const ref = mr.references?.full ?? `!${mr.iid}`;
   const isDraft = mr.draft || /^(Draft|WIP):/i.test(mr.title);
@@ -86,6 +100,7 @@ function MRCard({ mr, currentUserId }) {
               </span>
             )}
             <PipelineStatus pipeline={mr.pipeline} />
+            <ThreadsStatus stats={mr.discussion_stats} />
           </div>
 
           <a
@@ -143,6 +158,120 @@ function MRCard({ mr, currentUserId }) {
   );
 }
 
+function ProjectSettings({ projects, onClose }) {
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState(() => {
+    try {
+      const saved = localStorage.getItem("gl_selected_projects");
+      return saved ? new Set(JSON.parse(saved)) : new Set();
+    } catch {
+      return new Set();
+    }
+  });
+
+  const filtered = projects
+    .filter((p) => p.path_with_namespace.toLowerCase().includes(search.toLowerCase()))
+    .sort((a, b) => Number(selected.has(b.id)) - Number(selected.has(a.id)));
+
+  const allFilteredSelected = filtered.length > 0 && filtered.every((p) => selected.has(p.id));
+
+  const toggle = (id) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      localStorage.setItem("gl_selected_projects", JSON.stringify([...next]));
+      return next;
+    });
+  };
+
+  const toggleAll = () => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (allFilteredSelected) {
+        filtered.forEach((p) => next.delete(p.id));
+      } else {
+        filtered.forEach((p) => next.add(p.id));
+      }
+      localStorage.setItem("gl_selected_projects", JSON.stringify([...next]));
+      return next;
+    });
+  };
+
+  const clearAll = () => {
+    setSelected(new Set());
+    localStorage.removeItem("gl_selected_projects");
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+      <div
+        className="bg-white rounded-xl shadow-xl w-full max-w-lg mx-4 flex flex-col max-h-[80vh]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+          <h2 className="text-sm font-semibold text-gray-900">Project filter</h2>
+          <div className="flex items-center gap-3">
+            {selected.size > 0 && (
+              <button onClick={clearAll} className="text-xs text-gray-400 hover:text-gray-600">
+                Clear all ({selected.size})
+              </button>
+            )}
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
+          </div>
+        </div>
+
+        <div className="px-5 py-3 border-b border-gray-100">
+          <input
+            autoFocus
+            type="search"
+            placeholder="Filter projects…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full text-sm border border-gray-200 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+
+        <div className="px-5 py-2 border-b border-gray-100 flex items-center gap-2">
+          <input
+            type="checkbox"
+            id="toggle-all"
+            checked={allFilteredSelected}
+            onChange={toggleAll}
+            className="rounded"
+          />
+          <label htmlFor="toggle-all" className="text-xs text-gray-500 cursor-pointer select-none">
+            {allFilteredSelected ? "Deselect all" : "Select all"} ({filtered.length})
+          </label>
+          {selected.size === 0 && (
+            <span className="ml-auto text-xs text-gray-400">No selection = show all</span>
+          )}
+        </div>
+
+        <div className="overflow-y-auto flex-1 px-2 py-2">
+          {filtered.length === 0 ? (
+            <p className="text-center py-8 text-sm text-gray-400">No projects found</p>
+          ) : (
+            filtered.map((p) => (
+              <label
+                key={p.id}
+                className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-50 cursor-pointer"
+              >
+                <input
+                  type="checkbox"
+                  checked={selected.has(p.id)}
+                  onChange={() => toggle(p.id)}
+                  className="rounded shrink-0"
+                />
+                <span className="text-sm text-gray-700 truncate">{p.path_with_namespace}</span>
+              </label>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Select({ value, onChange, options, disabled }) {
   return (
     <select
@@ -180,6 +309,15 @@ export default function App() {
   const [error, setError] = useState(null);
   const [projects, setProjects] = useState([]);
   const [currentUser, setCurrentUser] = useState(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [selectedProjectIds, setSelectedProjectIds] = useState(() => {
+    try {
+      const saved = localStorage.getItem("gl_selected_projects");
+      return saved ? new Set(JSON.parse(saved)) : new Set();
+    } catch {
+      return new Set();
+    }
+  });
   const searchRef = useRef(null);
 
   useEffect(() => {
@@ -201,13 +339,21 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
+      const ids = (() => {
+        try {
+          const saved = localStorage.getItem("gl_selected_projects");
+          return saved ? JSON.parse(saved) : [];
+        } catch { return []; }
+      })();
       const params = new URLSearchParams({
         state: f.state,
         scope: f.scope,
         page: p,
         per_page: 25,
         ...(f.search ? { search: f.search } : {}),
-        ...(f.project_id ? { project_id: f.project_id } : {}),
+        ...(f.project_id
+          ? { project_id: f.project_id }
+          : ids.length > 0 ? { project_ids: ids.join(",") } : {}),
       });
       const r = await fetch(`/api/merge-requests?${params}`);
       if (!r.ok) throw new Error(`Error ${r.status}: ${await r.text()}`);
@@ -234,9 +380,24 @@ export default function App() {
     setFilters((prev) => ({ ...prev, search: searchRef.current.value }));
   };
 
+  const handleSettingsClose = () => {
+    setShowSettings(false);
+    try {
+      const saved = localStorage.getItem("gl_selected_projects");
+      setSelectedProjectIds(saved ? new Set(JSON.parse(saved)) : new Set());
+    } catch {
+      setSelectedProjectIds(new Set());
+    }
+  };
+
+  const visibleProjects = (selectedProjectIds.size > 0
+    ? projects.filter((p) => selectedProjectIds.has(p.id))
+    : projects
+  ).slice().sort((a, b) => a.path_with_namespace.localeCompare(b.path_with_namespace));
+
   const projectOpts = [
     { value: "", label: "All projects" },
-    ...projects.map((p) => ({ value: String(p.id), label: p.path_with_namespace })),
+    ...visibleProjects.map((p) => ({ value: String(p.id), label: p.path_with_namespace })),
   ];
 
   const visibleItems = needsMyApproval && currentUser
@@ -245,6 +406,10 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gray-50">
+      {showSettings && (
+        <ProjectSettings projects={projects} onClose={handleSettingsClose} />
+      )}
+
       <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center gap-4">
         <h1 className="text-base font-semibold text-gray-900 shrink-0">GitLab MRs</h1>
         <form onSubmit={handleSearch} className="flex-1 flex gap-2 max-w-md">
@@ -262,6 +427,17 @@ export default function App() {
             Search
           </button>
         </form>
+        <button
+          onClick={() => setShowSettings(true)}
+          title="Configure projects"
+          className={`ml-auto text-sm px-3 py-2 rounded-md border transition-colors ${
+            selectedProjectIds.size > 0
+              ? "border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100"
+              : "border-gray-200 bg-white text-gray-500 hover:bg-gray-50"
+          }`}
+        >
+          ⚙ Projects{selectedProjectIds.size > 0 && ` (${selectedProjectIds.size})`}
+        </button>
       </header>
 
       <main className="max-w-4xl mx-auto px-4 py-6">
@@ -271,7 +447,6 @@ export default function App() {
             value={filters.scope}
             onChange={setFilter("scope")}
             options={SCOPE_OPTS}
-            disabled={!!filters.project_id}
           />
           <select
             value={filters.project_id}

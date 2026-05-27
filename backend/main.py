@@ -41,6 +41,22 @@ async def _approvals(client: httpx.AsyncClient, project_id: int, iid: int) -> li
     return []
 
 
+async def _discussion_stats(client: httpx.AsyncClient, project_id: int, iid: int) -> dict:
+    try:
+        r = await client.get(
+            f"{GITLAB_URL}/api/v4/projects/{project_id}/merge_requests/{iid}/discussions",
+            headers=_HEADERS,
+            params={"per_page": 100},
+        )
+        if r.status_code == 200:
+            resolvable = [d for d in r.json() if d.get("resolvable")]
+            resolved = sum(1 for d in resolvable if d.get("resolved"))
+            return {"resolved": resolved, "total": len(resolvable)}
+    except Exception:
+        pass
+    return {"resolved": 0, "total": 0}
+
+
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
@@ -66,6 +82,35 @@ async def projects():
     return r.json()
 
 
+async def _fetch_project_mrs(
+    client: httpx.AsyncClient, project_id: int, params: dict
+) -> list[dict]:
+    try:
+        r = await client.get(
+            f"{GITLAB_URL}/api/v4/projects/{project_id}/merge_requests",
+            headers=_HEADERS,
+            params=params,
+        )
+        if r.status_code == 200:
+            return r.json()
+    except Exception:
+        pass
+    return []
+
+
+async def _enrich(client: httpx.AsyncClient, mr_list: list[dict]) -> list[dict]:
+    if not mr_list:
+        return []
+    approved_by_list, discussion_stats_list = await asyncio.gather(
+        asyncio.gather(*[_approvals(client, mr["project_id"], mr["iid"]) for mr in mr_list]),
+        asyncio.gather(*[_discussion_stats(client, mr["project_id"], mr["iid"]) for mr in mr_list]),
+    )
+    for mr, approved_by, discussion_stats in zip(mr_list, approved_by_list, discussion_stats_list):
+        mr["approved_by_users"] = approved_by
+        mr["discussion_stats"] = discussion_stats
+    return mr_list
+
+
 @app.get("/api/merge-requests")
 async def merge_requests(
     state: str = Query("opened", pattern="^(opened|merged|closed|all)$"),
@@ -74,35 +119,49 @@ async def merge_requests(
     per_page: int = Query(25, ge=1, le=100),
     search: str = Query(""),
     project_id: int | None = Query(None),
+    project_ids: str = Query(""),
 ):
-    params: dict = {
+    base_params: dict = {
         "state": state,
-        "page": page,
-        "per_page": per_page,
+        "scope": scope,
         "order_by": "updated_at",
         "sort": "desc",
     }
     if search:
-        params["search"] = search
+        base_params["search"] = search
 
-    path = f"/projects/{project_id}/merge_requests" if project_id else "/merge_requests"
-    if not project_id:
-        params["scope"] = scope
+    ids = [int(x) for x in project_ids.split(",") if x.strip().isdigit()] if project_ids else []
 
-    async with httpx.AsyncClient(timeout=15) as client:
-        r = await _get(client, path, params)
-        mr_list: list[dict] = r.json()
+    async with httpx.AsyncClient(timeout=30) as client:
+        if project_id:
+            # Single project — normal paginated request
+            r = await _get(client, f"/projects/{project_id}/merge_requests", {**base_params, "page": page, "per_page": per_page})
+            mr_list = r.json()
+            total = int(r.headers.get("X-Total", 0))
+            total_pages = int(r.headers.get("X-Total-Pages", 1))
+        elif ids:
+            # Multiple selected projects — fetch in parallel, merge and paginate in-memory
+            per_project_params = {**base_params, "per_page": 100}
+            all_mrs = []
+            for batch in await asyncio.gather(*[_fetch_project_mrs(client, pid, per_project_params) for pid in ids]):
+                all_mrs.extend(batch)
+            all_mrs.sort(key=lambda m: m.get("updated_at", ""), reverse=True)
+            total = len(all_mrs)
+            total_pages = max(1, -(-total // per_page))  # ceil division
+            start = (page - 1) * per_page
+            mr_list = all_mrs[start: start + per_page]
+        else:
+            # Global — no project filter
+            r = await _get(client, "/merge_requests", {**base_params, "page": page, "per_page": per_page})
+            mr_list = r.json()
+            total = int(r.headers.get("X-Total", 0))
+            total_pages = int(r.headers.get("X-Total-Pages", 1))
 
-        approved_by_list = await asyncio.gather(*[
-            _approvals(client, mr["project_id"], mr["iid"]) for mr in mr_list
-        ])
-
-    for mr, approved_by in zip(mr_list, approved_by_list):
-        mr["approved_by_users"] = approved_by
+        mr_list = await _enrich(client, mr_list)
 
     return {
         "items": mr_list,
-        "total": int(r.headers.get("X-Total", 0)),
-        "total_pages": int(r.headers.get("X-Total-Pages", 1)),
+        "total": total,
+        "total_pages": total_pages,
         "page": page,
     }
