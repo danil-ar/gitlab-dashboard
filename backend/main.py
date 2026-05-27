@@ -1,6 +1,7 @@
 import asyncio
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 import httpx
 import os
 from dotenv import load_dotenv
@@ -16,7 +17,7 @@ app = FastAPI(title="GitLab Dashboard API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
@@ -62,11 +63,72 @@ async def health():
     return {"status": "ok"}
 
 
+_AVATAR_ALLOWED = (GITLAB_URL, "https://secure.gravatar.com", "https://www.gravatar.com")
+
+async def _fetch_avatar(url: str) -> httpx.Response | None:
+    sep = "&" if "?" in url else "?"
+    attempts = [
+        dict(headers={"Authorization": f"Bearer {GITLAB_TOKEN}"}),
+        dict(headers=_HEADERS),
+        dict(url=f"{url}{sep}private_token={GITLAB_TOKEN}"),
+    ]
+    async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+        for kwargs in attempts:
+            fetch_url = kwargs.pop("url", url)
+            r = await client.get(fetch_url, **kwargs)
+            if r.status_code == 200:
+                return r
+    return None
+
+@app.get("/api/avatar")
+async def proxy_avatar(url: str = Query(...)):
+    if not any(url.startswith(o) for o in _AVATAR_ALLOWED):
+        raise HTTPException(status_code=400, detail="URL not allowed")
+    if url.startswith(GITLAB_URL):
+        r = await _fetch_avatar(url)
+        if r is None:
+            raise HTTPException(status_code=404)
+    else:
+        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+            r = await client.get(url)
+        if r.status_code != 200:
+            raise HTTPException(status_code=404)
+    return Response(
+        content=r.content,
+        media_type=r.headers.get("content-type", "image/png"),
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
 @app.get("/api/me")
 async def me():
     async with httpx.AsyncClient(timeout=10) as client:
         r = await _get(client, "/user")
     return r.json()
+
+
+@app.get("/api/mentions")
+async def mentions():
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await _get(client, "/todos", {
+            "action": "mentioned",
+            "state": "pending",
+            "per_page": 50,
+        })
+        todos = r.json()
+    seen: set = set()
+    mr_list: list = []
+    for todo in todos:
+        if todo.get("target_type") != "MergeRequest":
+            continue
+        target = todo.get("target") or {}
+        mid = target.get("id")
+        if mid and mid not in seen:
+            seen.add(mid)
+            mr_list.append(target)
+    async with httpx.AsyncClient(timeout=30) as client:
+        mr_list = await _enrich(client, mr_list)
+    return mr_list
 
 
 @app.get("/api/projects")
@@ -109,6 +171,18 @@ async def _enrich(client: httpx.AsyncClient, mr_list: list[dict]) -> list[dict]:
         mr["approved_by_users"] = approved_by
         mr["discussion_stats"] = discussion_stats
     return mr_list
+
+
+@app.post("/api/merge-requests/{project_id}/{iid}/approve")
+async def approve_mr(project_id: int, iid: int):
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.post(
+            f"{GITLAB_URL}/api/v4/projects/{project_id}/merge_requests/{iid}/approve",
+            headers=_HEADERS,
+        )
+    if r.status_code not in (200, 201):
+        raise HTTPException(status_code=r.status_code, detail=r.text)
+    return {"ok": True}
 
 
 @app.get("/api/merge-requests")
