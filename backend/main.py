@@ -50,11 +50,18 @@ async def _discussion_stats(client: httpx.AsyncClient, project_id: int, iid: int
             params={"per_page": 100},
         )
         if r.status_code == 200:
-            resolvable = [d for d in r.json() if d.get("resolvable")]
-            resolved = sum(1 for d in resolvable if d.get("resolved"))
-            return {"resolved": resolved, "total": len(resolvable)}
-    except Exception:
-        pass
+            total = 0
+            resolved_count = 0
+            for d in r.json():
+                notes = d.get("notes", [])
+                resolvable_notes = [n for n in notes if n.get("resolvable")]
+                if resolvable_notes:
+                    total += 1
+                    if all(n.get("resolved") for n in resolvable_notes):
+                        resolved_count += 1
+            return {"resolved": resolved_count, "total": total}
+    except Exception as e:
+        print(f"[discussion_stats] project={project_id} iid={iid} error: {e}")
     return {"resolved": 0, "total": 0}
 
 
@@ -160,16 +167,37 @@ async def _fetch_project_mrs(
     return []
 
 
+async def _latest_pipeline(client: httpx.AsyncClient, project_id: int, iid: int) -> dict | None:
+    try:
+        r = await client.get(
+            f"{GITLAB_URL}/api/v4/projects/{project_id}/merge_requests/{iid}/pipelines",
+            headers=_HEADERS,
+            params={"per_page": 50},
+        )
+        if r.status_code == 200:
+            pipelines = r.json()
+            for p in pipelines:
+                if p.get("source") != "merge_request_event":
+                    return p
+            if pipelines:
+                return pipelines[0]
+    except Exception as e:
+        print(f"[pipeline] project={project_id} iid={iid} error: {e}")
+    return None
+
+
 async def _enrich(client: httpx.AsyncClient, mr_list: list[dict]) -> list[dict]:
     if not mr_list:
         return []
-    approved_by_list, discussion_stats_list = await asyncio.gather(
+    approved_by_list, discussion_stats_list, pipeline_list = await asyncio.gather(
         asyncio.gather(*[_approvals(client, mr["project_id"], mr["iid"]) for mr in mr_list]),
         asyncio.gather(*[_discussion_stats(client, mr["project_id"], mr["iid"]) for mr in mr_list]),
+        asyncio.gather(*[_latest_pipeline(client, mr["project_id"], mr["iid"]) for mr in mr_list]),
     )
-    for mr, approved_by, discussion_stats in zip(mr_list, approved_by_list, discussion_stats_list):
+    for mr, approved_by, discussion_stats, pipeline in zip(mr_list, approved_by_list, discussion_stats_list, pipeline_list):
         mr["approved_by_users"] = approved_by
         mr["discussion_stats"] = discussion_stats
+        mr["pipeline"] = pipeline
     return mr_list
 
 
@@ -181,6 +209,55 @@ async def approve_mr(project_id: int, iid: int):
             headers=_HEADERS,
         )
     if r.status_code not in (200, 201):
+        raise HTTPException(status_code=r.status_code, detail=r.text)
+    return {"ok": True}
+
+
+_TODO_ACTIONS = {
+    "assigned", "review_requested", "mentioned", "directly_addressed",
+    "approval_required", "build_failed", "unmergeable", "marked",
+}
+
+
+@app.get("/api/todos")
+async def todos_list(
+    state: str = Query("pending", pattern="^(pending|done|all)$"),
+    action: str = Query(""),
+    target_type: str = Query(""),
+    per_page: int = Query(50, ge=1, le=100),
+):
+    params: dict = {"per_page": per_page}
+    if state != "all":
+        params["state"] = state
+    if action and action in _TODO_ACTIONS:
+        params["action"] = action
+    if target_type:
+        params["type"] = target_type
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await _get(client, "/todos", params)
+    return r.json()
+
+
+@app.post("/api/todos/mark_all_done")
+async def mark_all_todos_done():
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.post(
+            f"{GITLAB_URL}/api/v4/todos/mark_as_done",
+            headers=_HEADERS,
+        )
+    if r.status_code not in (200, 201, 204):
+        raise HTTPException(status_code=r.status_code, detail=r.text)
+    return {"ok": True}
+
+
+@app.post("/api/todos/{todo_id}/done")
+async def mark_todo_done(todo_id: int):
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.post(
+            f"{GITLAB_URL}/api/v4/todos/{todo_id}/mark_as_done",
+            headers=_HEADERS,
+        )
+    if r.status_code not in (200, 201, 204):
         raise HTTPException(status_code=r.status_code, detail=r.text)
     return {"ok": True}
 

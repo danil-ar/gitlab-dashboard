@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import TodoView, { fetchTodoCount } from "./TodoView";
 
 /* ─────────────────────────────── constants ─────────────────────────────── */
 
@@ -22,13 +23,17 @@ const STATE_BADGE = {
 };
 
 const PIPELINE = {
-  success:  { dot: "bg-green-500",              label: "passed" },
-  failed:   { dot: "bg-red-500",                label: "failed" },
-  running:  { dot: "bg-blue-400 animate-pulse", label: "running" },
-  pending:  { dot: "bg-yellow-400",             label: "pending" },
-  canceled: { dot: "bg-gray-400",               label: "canceled" },
-  skipped:  { dot: "bg-gray-300",               label: "skipped" },
-  created:  { dot: "bg-gray-300",               label: "created" },
+  success:              { dot: "bg-green-500",              label: "passed"    },
+  failed:               { dot: "bg-red-500",                label: "failed"    },
+  running:              { dot: "bg-blue-400 animate-pulse", label: "running"   },
+  pending:              { dot: "bg-yellow-400",             label: "pending"   },
+  canceled:             { dot: "bg-gray-400",               label: "canceled"  },
+  skipped:              { dot: "bg-gray-300",               label: "skipped"   },
+  created:              { dot: "bg-gray-300",               label: "created"   },
+  manual:               { dot: "bg-gray-400",               label: "manual"    },
+  scheduled:            { dot: "bg-blue-300",               label: "scheduled" },
+  waiting_for_resource: { dot: "bg-yellow-300",             label: "waiting"   },
+  preparing:            { dot: "bg-yellow-300",             label: "preparing" },
 };
 
 const BUCKETS = {
@@ -103,7 +108,8 @@ function PipelineStatus({ pipeline }) {
 }
 
 function ThreadsStatus({ stats }) {
-  if (!stats || stats.total === 0) return null;
+  if (!stats) return <span className="text-[11px] text-gray-400">—</span>;
+  if (stats.total === 0) return <span className="text-[11px] text-gray-400">—</span>;
   const allResolved = stats.resolved === stats.total;
   return (
     <span
@@ -111,7 +117,7 @@ function ThreadsStatus({ stats }) {
       className={`flex items-center gap-1 text-xs whitespace-nowrap ${allResolved ? "text-green-600" : "text-orange-500"}`}
     >
       <svg viewBox="0 0 16 16" className="w-3 h-3 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.5">
-        <path d="M2.5 9.5V3.5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v6m-11 0v3a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-3m-11 0h3l1 2h3l1-2h3" strokeLinecap="round" strokeLinejoin="round"/>
+        <path d="M2 3.5A1.5 1.5 0 0 1 3.5 2h9A1.5 1.5 0 0 1 14 3.5v6A1.5 1.5 0 0 1 12.5 11H9l-3 3v-3H3.5A1.5 1.5 0 0 1 2 9.5v-6Z" strokeLinecap="round" strokeLinejoin="round"/>
       </svg>
       <span className="tabular-nums">{stats.resolved}/{stats.total}</span>
     </span>
@@ -317,7 +323,7 @@ function BucketSection({ bucket, mrs, hint, currentUserId, defaultOpen = true, s
 
 /* ─────────────────────────── sidebar ─────────────────────────── */
 
-function Sidebar({ counts, totalOpen, view, setView, navigateBrowse, filters, projects, selectedProjectIds, openProjectSettings, currentUser, projectCounts }) {
+function Sidebar({ counts, totalOpen, view, setView, navigateBrowse, filters, projects, selectedProjectIds, openProjectSettings, currentUser, projectCounts, todosCount }) {
   const triageItem = (id, label, count, accent, urgent) => (
     <button
       key={id}
@@ -367,6 +373,25 @@ function Sidebar({ counts, totalOpen, view, setView, navigateBrowse, filters, pr
         {triageItem("approved", "You approved · open", counts.approved, "text-green-600")}
         {triageItem("mine",     "Your open MRs",       counts.mine,     "text-blue-600")}
         {triageItem("mention",  "Mentioned you",       counts.mention,  "text-purple-500")}
+        <button
+          onClick={() => setView({ kind: "todo" })}
+          className={`group w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors ${
+            view.kind === "todo"
+              ? "bg-white shadow-sm ring-1 ring-gray-200 text-gray-900 font-semibold"
+              : "text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+          }`}
+        >
+          <svg viewBox="0 0 16 16" className="w-3.5 h-3.5 shrink-0 text-blue-500" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <rect x="2" y="2" width="12" height="12" rx="1.5"/>
+            <path d="M5 8l2 2 4-4" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+          <span className="flex-1 text-left">To-Do List</span>
+          {todosCount > 0 && (
+            <span className="text-[11px] font-semibold tabular-nums px-1.5 py-0.5 rounded-full bg-gray-200 text-gray-600 group-hover:bg-gray-300">
+              {todosCount}
+            </span>
+          )}
+        </button>
       </div>
 
       {/* Browse */}
@@ -713,6 +738,8 @@ export default function App() {
   const [currentUser, setCurrentUser]         = useState(null);
   const [mentionedMRs, setMentionedMRs]       = useState([]);
   const [showSettings, setShowSettings]       = useState(false);
+  const [todoCount, setTodoCount]             = useState(0);
+  const [triageItems, setTriageItems]         = useState([]);
   const [selectedProjectIds, setSelectedProjectIds] = useState(() => {
     try {
       const saved = localStorage.getItem("gl_selected_projects");
@@ -725,13 +752,16 @@ export default function App() {
     fetch("/api/projects").then((r) => r.json()).then(setProjects).catch(() => {});
     fetch("/api/me").then((r) => r.json()).then(setCurrentUser).catch(() => {});
     fetch("/api/mentions").then((r) => r.json()).then(setMentionedMRs).catch(() => {});
+    fetchTodoCount().then(setTodoCount);
+    const id = setInterval(() => fetchTodoCount().then(setTodoCount), 60_000);
+    return () => clearInterval(id);
   }, []);
 
   useEffect(() => {
     try { localStorage.setItem("gl_filters", JSON.stringify(filters)); } catch {}
   }, [filters]);
 
-  const load = useCallback(async (f, p) => {
+  const load = useCallback(async (f, p, isTriage) => {
     setLoading(true);
     setError(null);
     try {
@@ -741,28 +771,32 @@ export default function App() {
           return saved ? JSON.parse(saved) : [];
         } catch { return []; }
       })();
-      const inTriage = view.kind === "triage";
       const params = new URLSearchParams({
-        state:    inTriage ? "opened" : f.state,
-        scope:    inTriage ? "all"    : f.scope,
-        page:     inTriage ? 1        : p,
-        per_page: inTriage ? 100      : 25,
-        ...((!inTriage && f.search) ? { search: f.search } : {}),
-        ...((!inTriage && f.project_id)
+        state:    isTriage ? "opened" : f.state,
+        scope:    isTriage ? "all"    : f.scope,
+        page:     isTriage ? 1        : p,
+        per_page: isTriage ? 100      : 25,
+        ...((!isTriage && f.search) ? { search: f.search } : {}),
+        ...((!isTriage && f.project_id)
           ? { project_id: f.project_id }
           : ids.length > 0 ? { project_ids: ids.join(",") } : {}),
       });
       const r = await fetch(`/api/merge-requests?${params}`);
       if (!r.ok) throw new Error(`Error ${r.status}: ${await r.text()}`);
-      setData(await r.json());
+      const json = await r.json();
+      setData(json);
+      if (isTriage) setTriageItems(json.items ?? []);
     } catch (e) {
       setError(e.message);
     } finally {
       setLoading(false);
     }
-  }, [view.kind]);
+  }, []);
 
-  useEffect(() => { load(filters, page); }, [load, filters, page]);
+  useEffect(() => {
+    if (view.kind === "todo") return;
+    load(filters, page, view.kind === "triage");
+  }, [load, filters, page, view.kind]);
 
   const setFilter = (key) => (e) => {
     setPage(1);
@@ -787,7 +821,7 @@ export default function App() {
       const saved = localStorage.getItem("gl_selected_projects");
       setSelectedProjectIds(saved ? new Set(JSON.parse(saved)) : new Set());
     } catch { setSelectedProjectIds(new Set()); }
-    load(filters, page);
+    load(filters, page, view.kind === "triage");
   };
 
   const visibleProjects = (selectedProjectIds.size > 0
@@ -802,24 +836,23 @@ export default function App() {
 
   const counts = useMemo(() => {
     const c = { needs: 0, approved: 0, mine: 0, mention: mentionedMRs.length };
-    if (!currentUser || !data?.items) return c;
-    for (const mr of data.items) {
+    if (!currentUser) return c;
+    for (const mr of triageItems) {
       const b = classifyMR(mr, currentUser.id);
       if (b && b !== "mention" && c[b] != null) c[b] += 1;
     }
     return c;
-  }, [data, currentUser, mentionedMRs]);
+  }, [triageItems, currentUser, mentionedMRs]);
 
   const projectCounts = useMemo(() => {
-    if (!data?.items) return {};
     const c = {};
-    for (const mr of data.items) {
+    for (const mr of triageItems) {
       if (mr.state === "opened") c[mr.project_id] = (c[mr.project_id] || 0) + 1;
     }
     return c;
-  }, [data]);
+  }, [triageItems]);
 
-  const totalOpen = data?.items?.filter((m) => m.state === "opened").length ?? 0;
+  const totalOpen = triageItems.filter((m) => m.state === "opened").length;
 
   return (
     <div className="flex h-screen bg-gray-50 overflow-hidden">
@@ -837,6 +870,7 @@ export default function App() {
         openProjectSettings={() => setShowSettings(true)}
         currentUser={currentUser}
         projectCounts={projectCounts}
+        todosCount={todoCount}
       />
 
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
@@ -870,7 +904,7 @@ export default function App() {
           {/* Right actions */}
           <div className="flex items-center gap-2 shrink-0">
             <button
-              onClick={() => load(filters, page)}
+              onClick={() => { if (view.kind !== "todo") load(filters, page, view.kind === "triage"); }}
               title="Refresh"
               className="w-7 h-7 flex items-center justify-center rounded-md border border-gray-200 bg-white hover:bg-gray-50 text-gray-500 transition-colors"
             >
@@ -902,14 +936,21 @@ export default function App() {
           </div>
         </header>
 
-        {view.kind === "triage" ? (
-          <Triage data={data} loading={loading} error={error} currentUser={currentUser} view={view} refresh={() => load(filters, page)} mentionedMRs={mentionedMRs} />
+        {view.kind === "todo" ? (
+          <TodoView />
+        ) : view.kind === "triage" ? (
+          <Triage data={data} loading={loading} error={error} currentUser={currentUser} view={view}
+            refresh={() => {
+              load(filters, page, true);
+              fetch("/api/mentions").then((r) => r.json()).then(setMentionedMRs).catch(() => {});
+            }}
+            mentionedMRs={mentionedMRs} />
         ) : (
           <Browse
             data={data} loading={loading} error={error}
             filters={filters} setFilter={setFilter} projectOpts={projectOpts}
             needsMyApproval={needsMyApproval} setNeedsMyApproval={setNeedsMyApproval}
-            refresh={() => load(filters, page)}
+            refresh={() => load(filters, page, view.kind === "triage")}
             searchRef={searchRef} handleSearch={handleSearch}
             page={page} setPage={setPage} currentUser={currentUser}
           />
