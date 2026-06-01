@@ -1,0 +1,5 @@
+ARG REGISTRY=""
+FROM ${REGISTRY}node:22-alpine
+WORKDIR /app
+COPY mock_server.js .
+CMD ["node", "mock_server.js"]

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
+import Avatar from "./components/Avatar";
 
 /* ─────────────────────────── action metadata ─────────────────────────── */
 
@@ -88,18 +89,6 @@ function renderBodyExcerpt(body) {
 }
 
 /* ─────────────────────────── atoms ─────────────────────────── */
-
-function Avatar({ user }) {
-  const [err, setErr] = useState(false);
-  if (user?.avatar_url && !err) {
-    return <img src={user.avatar_url} alt={user?.name ?? ""} className="w-5 h-5 rounded-full object-cover shrink-0" onError={() => setErr(true)} />;
-  }
-  return (
-    <span className="w-5 h-5 rounded-full bg-gray-300 inline-flex items-center justify-center font-medium text-[10px] text-gray-600 shrink-0">
-      {user?.name?.[0]?.toUpperCase() ?? "?"}
-    </span>
-  );
-}
 
 function FilterPill({ active, onClick, children, count, urgent }) {
   return (
@@ -248,7 +237,7 @@ export default function TodoView() {
   };
 
   const markAllDone = async () => {
-    if (!window.confirm("Отметить ВСЕ pending todos как выполненные?")) return;
+    if (!window.confirm("Mark ALL pending todos as done?")) return;
     setLoading(true);
     setAct("");
     try {
