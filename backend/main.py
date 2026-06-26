@@ -127,7 +127,7 @@ def _compute_discussion_stats(discussions: list[dict]) -> dict:
             {
                 "note_id":    n.get("id"),
                 "author":     n.get("author", {}).get("name", ""),
-                "body":       _truncate(_strip_markdown((n.get("body") or "").replace("\n", " ")), 80),
+                "body":       _truncate(_strip_markdown((n.get("body") or "").replace("\n", " ")), 300),
                 "created_at": n.get("created_at"),
             }
             for n in user_replies[:5]
