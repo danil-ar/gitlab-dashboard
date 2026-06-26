@@ -1,6 +1,6 @@
 import Avatar from "./Avatar";
 import PipelineStatus from "./PipelineStatus";
-import ThreadsStatus from "./ThreadsStatus";
+import ThreadsStatus, { ThreadPreview } from "./ThreadsStatus";
 import Label from "./Label";
 import { timeAgo } from "../utils/timeAgo";
 
@@ -9,8 +9,10 @@ export default function MRRow({ mr, currentUserId, bucket, selected, onToggle })
   const isDraft    = mr.draft || /^(Draft|WIP):/i.test(mr.title);
   const proj       = mr.references?.full?.split("!")[0] ?? "";
 
-  const accentClass = bucket?.accentBar
-    ? `relative before:content-[''] before:absolute before:inset-y-0 before:left-0 before:w-[3px] ${bucket.accentBar}`
+  const activities = mr.activities_after_approval;
+  const accentBar = activities ? "before:bg-amber-400" : bucket?.accentBar;
+  const accentClass = accentBar
+    ? `relative before:content-[''] before:absolute before:inset-y-0 before:left-0 before:w-[3px] ${accentBar}`
     : "";
 
   return (
@@ -33,6 +35,58 @@ export default function MRRow({ mr, currentUserId, bucket, selected, onToggle })
           {mr.has_conflicts && (
             <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200 shrink-0">conflicts</span>
           )}
+          {activities && (() => {
+            const parts = [
+              activities.commits?.length > 0 && `+${activities.commits.length} commit${activities.commits.length > 1 ? "s" : ""}`,
+              activities.new_threads > 0 && `${activities.new_threads} thread${activities.new_threads > 1 ? "s" : ""}`,
+            ].filter(Boolean);
+            return (
+              <span className="relative group/act shrink-0 inline-flex items-center">
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-300 cursor-default">
+                  {parts.join(" · ")}
+                </span>
+                <div className="absolute bottom-full left-0 pb-2 hidden group-hover/act:block z-50 w-[400px]"><div className="bg-gray-800 border border-white/10 text-white text-[11px] rounded-lg shadow-2xl overflow-hidden"><div className="max-h-[420px] overflow-y-auto overflow-x-hidden p-2 [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-white/15 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb:hover]:bg-white/30">
+                  {activities.commits?.length > 0 && (() => {
+                    const projectUrl = mr.web_url?.split("/-/")[0] ?? "";
+                    return (
+                      <div className={activities.new_threads > 0 ? "mb-2" : ""}>
+                        <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-amber-400 mb-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
+                          New commits · {activities.commits.length}
+                        </div>
+                        {activities.commits.map((c) => (
+                          <a
+                            key={c.short_id}
+                            href={`${projectUrl}/-/commit/${c.id}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex gap-2 items-baseline py-0.5 hover:bg-white/8 rounded-md px-1 transition-colors"
+                          >
+                            <code className="text-amber-400 shrink-0 text-[10px]">{c.short_id}</code>
+                            <span className="text-gray-300 truncate">{c.title}</span>
+                          </a>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                  {activities.new_threads > 0 && (
+                    <div>
+                      <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-orange-400 mb-1.5">
+                        <span className="w-1.5 h-1.5 rounded-full bg-orange-400 shrink-0" />
+                        New threads · {activities.new_threads}
+                      </div>
+                      <div className="overflow-y-auto overflow-x-hidden">
+                        {(activities.new_thread_previews ?? []).map((p, i) => (
+                          <ThreadPreview key={i} p={p} url={mr.web_url}
+                            separator={i < (activities.new_thread_previews?.length ?? 0) - 1} />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div></div></div>
+              </span>
+            );
+          })()}
         </div>
         <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-gray-500 min-w-0 flex-wrap">
           <span className="font-mono shrink-0 truncate max-w-[200px]">{proj}<span className="text-gray-400">!{mr.iid}</span></span>
@@ -51,7 +105,7 @@ export default function MRRow({ mr, currentUserId, bucket, selected, onToggle })
       </div>
 
       <div className="w-[48px] hidden md:flex shrink-0">
-        <ThreadsStatus stats={mr.discussion_stats} />
+        <ThreadsStatus stats={mr.discussion_stats} mrUrl={mr.web_url} />
       </div>
 
       <div className="w-[96px] hidden md:flex items-center gap-1.5 shrink-0">

@@ -8,7 +8,7 @@ const PROJECTS = [
   { id: 103, path_with_namespace: "sogaz/lk-packages" },
 ];
 
-function mr(id, iid, pid, title, authorId = 2, approved = false, draft = false, pipeline = "success") {
+function mr(id, iid, pid, title, authorId = 2, approved = false, draft = false, pipeline = "success", updatedAfterApproval = false) {
   return {
     id, iid, project_id: pid,
     title: (draft ? "Draft: " : "") + title,
@@ -20,8 +20,9 @@ function mr(id, iid, pid, title, authorId = 2, approved = false, draft = false, 
     assignees: [], labels: ["backend"], has_conflicts: false,
     updated_at: "2025-03-15T10:00:00Z",
     approved_by_users: approved ? [ME] : [],
-    discussion_stats: { resolved: 2, total: 3 },
+    discussion_stats: { resolved: 2, total: 3, unresolved_previews: [{ author: "Богданов Ярослав", body: "Можно вынести эту логику в отдельный сервис?" }] },
     pipeline: { status: pipeline, web_url: "#" },
+    activities_after_approval: updatedAfterApproval,
   };
 }
 
@@ -32,7 +33,15 @@ const MRS = [
   mr(4, 4, 101, "LKAG-2307: Fixed v1 security vulns",   5),
   mr(5, 5, 101, "My own feature branch",                1, false, false, "running"),
   mr(6, 6, 103, "Refactor packages module",             1, false, true),
-  mr(7, 7, 101, "Already reviewed this one",            2, true),
+  mr(7, 7, 101, "Already reviewed this one",            2, true,  false, "success", false),
+  mr(8, 8, 102, "Auth refactor: token rotation",        3, true,  false, "running", {
+    commits: [
+      { id: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2", short_id: "a1b2c3d4", title: "fix: handle token expiry edge case" },
+      { id: "b2c3d4e5f6a7b2c3d4e5f6a7b2c3d4e5f6a7b2c3", short_id: "b2c3d4e5", title: "fix: refresh token rotation" },
+    ],
+    new_threads: 1,
+    new_thread_previews: [{ author: "Богданов Ярослав", body: "Не хватает обработки ошибки при истечении токена" }],
+  }),
 ];
 
 const TODOS = [
@@ -78,6 +87,9 @@ const server = http.createServer((req, res) => {
   }
 
   if (path.match(/^\/api\/merge-requests\/\d+\/\d+\/approve$/) && req.method === "POST")
+    return send(res, { ok: true });
+
+  if (path.match(/^\/api\/merge-requests\/\d+\/\d+\/unapprove$/) && req.method === "POST")
     return send(res, { ok: true });
 
   if (path === "/api/todos" && req.method === "GET")

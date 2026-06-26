@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
@@ -14,6 +15,7 @@ GITLAB_TOKEN = os.environ["GITLAB_TOKEN"]
 _HEADERS     = {"PRIVATE-TOKEN": GITLAB_TOKEN}
 
 _http: httpx.AsyncClient
+_current_user_cache: dict | None = None
 
 
 @asynccontextmanager
@@ -41,6 +43,188 @@ async def _get(path: str, params: dict | None = None) -> httpx.Response:
     return r
 
 
+def _parse_dt(s: str) -> datetime:
+    return datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+
+async def _get_current_user() -> dict:
+    global _current_user_cache
+    if _current_user_cache is None:
+        r = await _get("/user")
+        _current_user_cache = r.json()
+    return _current_user_cache
+
+
+async def _find_approval_note(project_id: int, iid: int, user_id: int) -> str | None:
+    """Возвращает timestamp последнего аппрува пользователя, пагинируя ноты."""
+    page = 1
+    while True:
+        r = await _http.get(
+            f"{GITLAB_URL}/api/v4/projects/{project_id}/merge_requests/{iid}/notes",
+            headers=_HEADERS,
+            params={"per_page": 100, "sort": "desc", "order_by": "created_at", "page": page},
+        )
+        if r.status_code != 200:
+            return None
+        notes = r.json()
+        if not notes:
+            return None
+        for note in notes:
+            if (note.get("system") and
+                    note.get("author", {}).get("id") == user_id and
+                    note.get("body", "") == "approved this merge request"):
+                return note["created_at"]
+        total_pages = int(r.headers.get("X-Total-Pages", 1))
+        if page >= total_pages:
+            return None
+        page += 1
+
+
+async def _fetch_discussions(project_id: int, iid: int) -> list[dict]:
+    try:
+        r = await _http.get(
+            f"{GITLAB_URL}/api/v4/projects/{project_id}/merge_requests/{iid}/discussions",
+            headers=_HEADERS,
+            params={"per_page": 100},
+        )
+        if r.status_code == 200:
+            return r.json()
+    except Exception as e:
+        print(f"[discussions] project={project_id} iid={iid} error: {e}")
+    return []
+
+
+def _strip_markdown(text: str) -> str:
+    import re
+    text = re.sub(r'\*{1,3}(.+?)\*{1,3}', r'\1', text)
+    text = re.sub(r'_{1,3}(.+?)_{1,3}', r'\1', text)
+    text = re.sub(r'`(.+?)`',            r'\1', text)
+    text = re.sub(r'^#{1,6}\s*',         '',    text, flags=re.MULTILINE)
+    return text.strip()
+
+
+def _truncate(text: str, max_len: int = 120) -> str:
+    if len(text) <= max_len:
+        return text
+    return text[:max_len].rsplit(" ", 1)[0] + "…"
+
+
+def _compute_discussion_stats(discussions: list[dict]) -> dict:
+    total = resolved_count = 0
+    unresolved_previews: list[dict] = []
+    resolved_previews:   list[dict] = []
+    for d in discussions:
+        notes = d.get("notes", [])
+        resolvable = [n for n in notes if n.get("resolvable")]
+        if not resolvable:
+            continue
+        total += 1
+        first    = notes[0]
+        body     = (first.get("body") or "").replace("\n", " ")
+        position = first.get("position") or {}
+        user_replies = [n for n in notes[1:] if not n.get("system")]
+        reply_notes = [
+            {
+                "note_id":    n.get("id"),
+                "author":     n.get("author", {}).get("name", ""),
+                "body":       _truncate(_strip_markdown((n.get("body") or "").replace("\n", " ")), 80),
+                "created_at": n.get("created_at"),
+            }
+            for n in user_replies[:5]
+        ]
+        preview  = {
+            "note_id":    first.get("id"),
+            "author":     first.get("author", {}).get("name", ""),
+            "body":       _truncate(_strip_markdown(body), 500),
+            "created_at": first.get("created_at"),
+            "replies":    len(user_replies),
+            "reply_notes": reply_notes,
+            "file_path":  position.get("new_path") or position.get("old_path"),
+            "line":       position.get("new_line") or position.get("old_line"),
+        }
+        if all(n.get("resolved") for n in resolvable):
+            resolved_count += 1
+            resolved_previews.append(preview)
+        else:
+            unresolved_previews.append(preview)
+    return {
+        "resolved": resolved_count,
+        "total": total,
+        "unresolved_previews": unresolved_previews,
+        "resolved_previews":   resolved_previews,
+    }
+
+
+def _compute_new_threads(discussions: list[dict], since: datetime) -> tuple[int, list[dict]]:
+    previews: list[dict] = []
+    for d in discussions:
+        notes = d.get("notes", [])
+        if not notes or notes[0].get("system"):
+            continue
+        if _parse_dt(notes[0].get("created_at", "")) > since:
+            first    = notes[0]
+            body     = (first.get("body") or "").replace("\n", " ")
+            position = first.get("position") or {}
+            user_replies = [n for n in notes[1:] if not n.get("system")]
+            reply_notes = [
+                {
+                    "note_id":    n.get("id"),
+                    "author":     n.get("author", {}).get("name", ""),
+                    "body":       _truncate(_strip_markdown((n.get("body") or "").replace("\n", " ")), 300),
+                    "created_at": n.get("created_at"),
+                }
+                for n in user_replies[:5]
+            ]
+            previews.append({
+                "note_id":    first.get("id"),
+                "author":     first.get("author", {}).get("name", ""),
+                "body":       _truncate(_strip_markdown(body), 500),
+                "created_at": first.get("created_at"),
+                "replies":    len(user_replies),
+                "reply_notes": reply_notes,
+                "file_path":  position.get("new_path") or position.get("old_path"),
+                "line":       position.get("new_line") or position.get("old_line"),
+            })
+    return len(previews), previews
+
+
+async def _activities_after_approval(
+    project_id: int, iid: int, user_id: int, discussions: list[dict]
+) -> dict | None:
+    try:
+        last_approval_at = await _find_approval_note(project_id, iid, user_id)
+        if last_approval_at is None:
+            return None
+
+        approval_dt = _parse_dt(last_approval_at)
+
+        commits_r = await _http.get(
+            f"{GITLAB_URL}/api/v4/projects/{project_id}/merge_requests/{iid}/commits",
+            headers=_HEADERS,
+            params={"per_page": 20},
+        )
+
+        new_commits = []
+        if commits_r.status_code == 200:
+            for c in commits_r.json():
+                if _parse_dt(c.get("committed_date", "")) > approval_dt:
+                    new_commits.append({
+                        "id":       c.get("id", ""),
+                        "short_id": c.get("short_id", ""),
+                        "title":    c.get("title", ""),
+                    })
+
+        new_threads, new_thread_previews = _compute_new_threads(discussions, approval_dt)
+
+        if not new_commits and new_threads == 0:
+            return None
+
+        return {"commits": new_commits, "new_threads": new_threads, "new_thread_previews": new_thread_previews}
+    except Exception as e:
+        print(f"[activities_after_approval] project={project_id} iid={iid} error: {e}")
+        return None
+
+
 async def _approvals(project_id: int, iid: int) -> list[dict]:
     try:
         r = await _http.get(
@@ -52,29 +236,6 @@ async def _approvals(project_id: int, iid: int) -> list[dict]:
     except Exception:
         pass
     return []
-
-
-async def _discussion_stats(project_id: int, iid: int) -> dict:
-    try:
-        r = await _http.get(
-            f"{GITLAB_URL}/api/v4/projects/{project_id}/merge_requests/{iid}/discussions",
-            headers=_HEADERS,
-            params={"per_page": 100},
-        )
-        if r.status_code == 200:
-            total = 0
-            resolved_count = 0
-            for d in r.json():
-                notes = d.get("notes", [])
-                resolvable_notes = [n for n in notes if n.get("resolvable")]
-                if resolvable_notes:
-                    total += 1
-                    if all(n.get("resolved") for n in resolvable_notes):
-                        resolved_count += 1
-            return {"resolved": resolved_count, "total": total}
-    except Exception as e:
-        print(f"[discussion_stats] project={project_id} iid={iid} error: {e}")
-    return {"resolved": 0, "total": 0}
 
 
 async def _latest_pipeline(project_id: int, iid: int) -> dict | None:
@@ -113,17 +274,37 @@ async def _fetch_project_mrs(project_id: int, params: dict) -> list[dict]:
 async def _enrich(mr_list: list[dict]) -> list[dict]:
     if not mr_list:
         return []
-    approved_by_list, discussion_stats_list, pipeline_list = await asyncio.gather(
+
+    current_user = await _get_current_user()
+    me_id = current_user.get("id")
+
+    approved_by_list, discussions_list, pipeline_list = await asyncio.gather(
         asyncio.gather(*[_approvals(mr["project_id"], mr["iid"]) for mr in mr_list]),
-        asyncio.gather(*[_discussion_stats(mr["project_id"], mr["iid"]) for mr in mr_list]),
+        asyncio.gather(*[_fetch_discussions(mr["project_id"], mr["iid"]) for mr in mr_list]),
         asyncio.gather(*[_latest_pipeline(mr["project_id"], mr["iid"]) for mr in mr_list]),
     )
-    for mr, approved_by, discussion_stats, pipeline in zip(
-        mr_list, approved_by_list, discussion_stats_list, pipeline_list
-    ):
+
+    for mr, approved_by in zip(mr_list, approved_by_list):
         mr["approved_by_users"] = approved_by
-        mr["discussion_stats"]  = discussion_stats
-        mr["pipeline"]          = pipeline
+
+    async def _maybe_get_activities(mr: dict, discussions: list[dict]) -> dict | None:
+        if not me_id:
+            return None
+        if not any(u.get("id") == me_id for u in mr.get("approved_by_users", [])):
+            return None
+        return await _activities_after_approval(mr["project_id"], mr["iid"], me_id, discussions)
+
+    activities_list = await asyncio.gather(
+        *[_maybe_get_activities(mr, d) for mr, d in zip(mr_list, discussions_list)]
+    )
+
+    for mr, discussions, pipeline, activities in zip(
+        mr_list, discussions_list, pipeline_list, activities_list
+    ):
+        mr["discussion_stats"]          = _compute_discussion_stats(discussions)
+        mr["pipeline"]                  = pipeline
+        mr["activities_after_approval"] = activities
+
     return mr_list
 
 
@@ -209,6 +390,17 @@ async def approve_mr(project_id: int, iid: int):
         headers=_HEADERS,
     )
     if r.status_code not in (200, 201):
+        raise HTTPException(status_code=r.status_code, detail=r.text)
+    return {"ok": True}
+
+
+@app.post("/api/merge-requests/{project_id}/{iid}/unapprove")
+async def unapprove_mr(project_id: int, iid: int):
+    r = await _http.post(
+        f"{GITLAB_URL}/api/v4/projects/{project_id}/merge_requests/{iid}/unapprove",
+        headers=_HEADERS,
+    )
+    if r.status_code not in (200, 201, 204):
         raise HTTPException(status_code=r.status_code, detail=r.text)
     return {"ok": True}
 
