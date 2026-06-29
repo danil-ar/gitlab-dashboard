@@ -6,10 +6,8 @@ export default function BucketSection({ bucket, mrs, hint, currentUserId, defaul
   const [open, setOpen] = useState(defaultOpen);
   return (
     <section>
-      <header className="flex items-center gap-2.5 px-4 py-2.5 bg-gray-50 border-y border-gray-200 sticky top-0 z-[1]">
-        <button onClick={() => setOpen((v) => !v)} className="text-gray-400 hover:text-gray-600 text-xs w-4 shrink-0">
-          {open ? "▾" : "▸"}
-        </button>
+      <header onClick={() => setOpen((v) => !v)} className="flex items-center gap-2.5 px-4 py-2.5 bg-gray-50 border-y border-gray-200 sticky top-0 z-[1] cursor-pointer hover:bg-gray-100 transition-colors select-none">
+        <span className="text-gray-400 text-xs w-4 shrink-0">{open ? "▾" : "▸"}</span>
         <BucketIcon id={bucket.id} className={`w-3.5 h-3.5 shrink-0 ${bucket.iconColor}`} />
         <span className="text-[13px] font-semibold text-gray-900">{bucket.label}</span>
         <span className={`text-[11px] font-semibold tabular-nums px-1.5 py-0.5 rounded-full ${bucket.pillBg}`}>

@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { timeAgo } from "../utils/timeAgo";
+import { renderMd } from "../utils/renderMd";
 
 export function ThreadPreview({ p, url, dim = false, separator = false }) {
   const [expanded, setExpanded] = useState(false);
@@ -13,7 +14,7 @@ export function ThreadPreview({ p, url, dim = false, separator = false }) {
         href={url && p.note_id ? `${url}#note_${p.note_id}` : url}
         target="_blank"
         rel="noopener noreferrer"
-        className="block hover:bg-white/8 rounded-md px-1 py-1 transition-colors"
+        className="block hover:bg-white/8 rounded-md px-1 py-1 transition-colors border border-transparent hover:border-white/8"
       >
         <div className="flex items-center justify-between gap-2 mb-0.5">
           <div className="min-w-0 flex-1">
@@ -48,7 +49,7 @@ export function ThreadPreview({ p, url, dim = false, separator = false }) {
         )}
         <div className={`text-[12px] leading-[1.4] ${dim ? "text-gray-400" : "text-gray-300"}`}
              style={{ wordBreak: "break-word", overflowWrap: "anywhere" }}>
-          {p.body}
+          {renderMd(p.body)}
         </div>
       </a>
 
@@ -72,7 +73,7 @@ export function ThreadPreview({ p, url, dim = false, separator = false }) {
               </div>
               <div className={`text-[11px] leading-[1.35] ${dim ? "text-gray-500" : "text-gray-400"}`}
                    style={{ wordBreak: "break-word", overflowWrap: "anywhere" }}>
-                {r.body}
+                {renderMd(r.body)}
               </div>
             </a>
           ))}
@@ -92,7 +93,7 @@ function TooltipContent({ stats, mrUrl }) {
   return (
     <div className="bg-gray-800 border border-white/10 rounded-lg shadow-2xl overflow-hidden">
       <div
-        className="max-h-[420px] overflow-y-auto p-2
+        className="max-h-[560px] overflow-y-auto p-2
           [&::-webkit-scrollbar]:w-1
           [&::-webkit-scrollbar-track]:bg-transparent
           [&::-webkit-scrollbar-thumb]:bg-white/15
@@ -101,7 +102,7 @@ function TooltipContent({ stats, mrUrl }) {
       >
         {unresolved.length > 0 && (
           <>
-            <div className="sticky top-0 bg-gray-800 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-orange-400 pb-1.5 mb-0.5">
+            <div className="sticky top-0 z-10 bg-gray-800 -mx-2 px-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-orange-400 py-1.5 mb-0.5">
               <span className="w-1.5 h-1.5 rounded-full bg-orange-400 shrink-0" />
               Unresolved · {unresolved.length}
             </div>
@@ -112,7 +113,7 @@ function TooltipContent({ stats, mrUrl }) {
         )}
         {resolved.length > 0 && (
           <>
-            <div className={`sticky top-0 bg-gray-800 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-green-500 pb-1.5 mb-0.5 ${unresolved.length > 0 ? "mt-3 pt-2.5 border-t border-white/8" : ""}`}>
+            <div className={`sticky top-0 z-10 bg-gray-800 -mx-2 px-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-green-500 py-1.5 mb-0.5 ${unresolved.length > 0 ? "mt-3 border-t border-white/8" : ""}`}>
               <span className="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" />
               Resolved · {resolved.length}
             </div>
@@ -139,7 +140,7 @@ export default function ThreadsStatus({ stats, mrUrl }) {
       const above = rect.top >= 430;
       setStyle({
         position: "fixed",
-        width:    "400px",
+        width:    "480px",
         right:    `${window.innerWidth - rect.right}px`,
         ...(above
           ? { bottom: `${window.innerHeight - rect.top + 8}px` }

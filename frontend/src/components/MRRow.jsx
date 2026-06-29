@@ -94,7 +94,9 @@ export default function MRRow({ mr, currentUserId, bucket, selected, onToggle })
           <span className="shrink-0">by <span className="text-gray-700">{mr.author?.name}</span></span>
           <span className="text-gray-300 shrink-0">·</span>
           <span className="flex items-center gap-1 shrink-0">
-            →&nbsp;<code className="bg-gray-100 px-1 rounded text-[10px]">{mr.target_branch}</code>
+            <code className="bg-gray-100 px-1 rounded text-[10px] max-w-[100px] truncate">{mr.source_branch}</code>
+            <span className="text-gray-400">→</span>
+            <code className="bg-gray-100 px-1 rounded text-[10px]">{mr.target_branch}</code>
           </span>
           {mr.labels?.slice(0, 3).map((l) => <Label key={l}>{l}</Label>)}
         </div>
