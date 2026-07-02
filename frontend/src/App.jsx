@@ -1,15 +1,65 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import TodoView, { fetchTodoCount } from "./TodoView";
 import Sidebar from "./components/Sidebar";
+import LoginScreen from "./components/LoginScreen";
 import ProjectSettings from "./components/ProjectSettings";
 import Triage from "./views/Triage";
 import Browse from "./views/Browse";
 import Avatar from "./components/Avatar";
 import { IconRefresh, IconSearch, IconFilter } from "./components/icons";
 import { classifyMR } from "./utils/classifyMR";
-import { loadFilters, saveFilters, loadSelectedProjects } from "./utils/storage";
+import { loadFilters, saveFilters, loadSelectedProjects, saveSelectedProjects } from "./utils/storage";
 
-export default function App() {
+// ─── root (manages session via cookie) ───────────────────────────────────────
+
+export default function Root() {
+  const [ready, setReady]               = useState(false);
+  const [profiles, setProfiles]         = useState([]);
+  const [activeProfile, setActiveProfile] = useState(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const r = await fetch("/api/auth/profiles");
+      const data = await r.json();
+      const list = data.profiles ?? [];
+      const active = list.find((p) => p.id === data.activeId) ?? null;
+      setProfiles(list);
+      setActiveProfile(active);
+    } catch {
+      setProfiles([]);
+      setActiveProfile(null);
+    } finally {
+      setReady(true);
+    }
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  if (!ready) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center text-sm text-gray-400">
+        Loading…
+      </div>
+    );
+  }
+
+  if (!activeProfile) {
+    return <LoginScreen onLogin={refresh} />;
+  }
+
+  return (
+    <App
+      key={activeProfile.id}
+      activeProfile={activeProfile}
+      profiles={profiles}
+      onRefresh={refresh}
+    />
+  );
+}
+
+// ─── main app ────────────────────────────────────────────────────────────────
+
+function App({ activeProfile, profiles, onRefresh }) {
   const [view, setView]                             = useState({ kind: "triage", bucket: "needs" });
   const [filters, setFilters]                       = useState(loadFilters);
   const [needsMyApproval, setNeedsMyApproval]       = useState(false);
@@ -25,16 +75,38 @@ export default function App() {
   const [triageItems, setTriageItems]               = useState([]);
   const [selectedProjectIds, setSelectedProjectIds] = useState(loadSelectedProjects);
   const [autoRefreshSecs, setAutoRefreshSecs]       = useState(0);
+  const [searchInput, setSearchInput]               = useState(filters.search);
   const searchRef = useRef(null);
 
+  useEffect(() => { setSearchInput(filters.search); }, [filters.search]);
+
+  const signOut = useCallback(async () => {
+    await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+    onRefresh();
+  }, [onRefresh]);
+
   useEffect(() => {
-    fetch("/api/projects").then((r) => r.json()).then(setProjects).catch((e) => console.error("[init] projects", e));
-    fetch("/api/me").then((r) => r.json()).then(setCurrentUser).catch((e) => console.error("[init] me", e));
-    fetch("/api/mentions").then((r) => r.json()).then(setMentionedMRs).catch((e) => console.error("[init] mentions", e));
+    fetch("/api/projects")
+      .then((r) => { if (r.status === 401) { signOut(); return null; } return r.json(); })
+      .then((d) => {
+        if (!d) return;
+        setProjects(d);
+        if (loadSelectedProjects().size === 0) {
+          fetch("/api/config").then((r) => r.json()).then((cfg) => {
+            if (!cfg.default_group) return;
+            const ns = cfg.default_group.toLowerCase();
+            const ids = new Set(d.filter((p) => p.path_with_namespace.toLowerCase().startsWith(ns + "/")).map((p) => p.id));
+            if (ids.size > 0) { saveSelectedProjects(ids); setSelectedProjectIds(ids); }
+          }).catch(() => {});
+        }
+      })
+      .catch(console.error);
+    fetch("/api/me").then((r) => { if (r.status === 401) { signOut(); return null; } return r.json(); }).then((d) => d && setCurrentUser(d)).catch(console.error);
+    fetch("/api/mentions").then((r) => { if (r.status === 401) return null; return r.json(); }).then((d) => d && setMentionedMRs(d)).catch(console.error);
     fetchTodoCount().then(setTodoCount);
     const id = setInterval(() => fetchTodoCount().then(setTodoCount), 60_000);
     return () => clearInterval(id);
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { saveFilters(filters); }, [filters]);
 
@@ -45,7 +117,7 @@ export default function App() {
       const ids = [...projectIds];
       const params = new URLSearchParams({
         state:    isTriage ? "opened" : f.state,
-        scope:    isTriage ? "all"    : f.scope,
+        ...(isTriage ? { triage: "1" } : { scope: f.scope }),
         page:     isTriage ? 1        : p,
         per_page: isTriage ? 100      : 25,
         ...((!isTriage && f.search) ? { search: f.search } : {}),
@@ -54,6 +126,7 @@ export default function App() {
           : ids.length > 0 ? { project_ids: ids.join(",") } : {}),
       });
       const r = await fetch(`/api/merge-requests?${params}`);
+      if (r.status === 401) { signOut(); return; }
       if (!r.ok) throw new Error(`Error ${r.status}: ${await r.text()}`);
       const json = await r.json();
       setData(json);
@@ -76,7 +149,7 @@ export default function App() {
     const id = setInterval(() => {
       load(filters, page, isTriage, selectedProjectIds);
       if (isTriage) {
-        fetch("/api/mentions").then((r) => r.json()).then(setMentionedMRs).catch((e) => console.error("[auto-refresh] mentions", e));
+        fetch("/api/mentions").then((r) => r.json()).then(setMentionedMRs).catch(console.error);
       }
     }, autoRefreshSecs * 1000);
     return () => clearInterval(id);
@@ -151,6 +224,9 @@ export default function App() {
         currentUser={currentUser}
         projectCounts={projectCounts}
         todosCount={todoCount}
+        activeProfile={activeProfile}
+        profiles={profiles}
+        onRefresh={onRefresh}
       />
 
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
@@ -164,17 +240,32 @@ export default function App() {
             <div className="relative w-full">
               <IconSearch className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
               <input
-                type="search"
+                type="text"
                 placeholder="Search merge requests…"
-                defaultValue={filters.search}
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key !== "Enter") return;
                   setPage(1);
-                  setFilters((prev) => ({ ...prev, search: e.currentTarget.value }));
+                  setFilters((prev) => ({ ...prev, search: searchInput }));
                   if (view.kind !== "browse") navigateBrowse(filters.state);
                 }}
-                className="w-full text-sm bg-gray-50 border border-gray-200 rounded-md pl-8 pr-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
+                className={`w-full text-sm bg-gray-50 border border-gray-200 rounded-md pl-8 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors ${searchInput ? "pr-7" : "pr-3"}`}
               />
+              {searchInput && (
+                <button
+                  onClick={() => {
+                    setSearchInput("");
+                    setPage(1);
+                    setFilters((prev) => ({ ...prev, search: "" }));
+                  }}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                >
+                  <svg viewBox="0 0 16 16" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round"/>
+                  </svg>
+                </button>
+              )}
             </div>
           </div>
 
@@ -220,7 +311,7 @@ export default function App() {
             currentUser={currentUser} view={view}
             refresh={() => {
               load(filters, page, true, selectedProjectIds);
-              fetch("/api/mentions").then((r) => r.json()).then(setMentionedMRs).catch((e) => console.error("[refresh] mentions", e));
+              fetch("/api/mentions").then((r) => r.json()).then(setMentionedMRs).catch(console.error);
             }}
             mentionedMRs={mentionedMRs}
             autoRefreshSecs={autoRefreshSecs}

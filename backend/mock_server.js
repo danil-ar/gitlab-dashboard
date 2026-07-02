@@ -64,9 +64,11 @@ function send(res, data, status = 200) {
   res.end(JSON.stringify(data));
 }
 
+const MOCK_PROFILE = { id: "mock", label: ME.name, gitlabUrl: "http://localhost:8000" };
+
 const server = http.createServer((req, res) => {
   if (req.method === "OPTIONS") {
-    res.writeHead(204, { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET,POST", "Access-Control-Allow-Headers": "*" });
+    res.writeHead(204, { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET,POST,DELETE", "Access-Control-Allow-Headers": "*" });
     return res.end();
   }
 
@@ -74,6 +76,20 @@ const server = http.createServer((req, res) => {
   const path = url.pathname;
 
   if (path === "/api/health")   return send(res, { status: "ok" });
+  if (path === "/api/config")   return send(res, { gitlab_url: null });
+
+  // auth — mock always has one pre-configured profile, no real validation
+  if (path === "/api/auth/profiles")
+    return send(res, { profiles: [MOCK_PROFILE], activeId: MOCK_PROFILE.id });
+  if (path === "/api/auth/login" && req.method === "POST")
+    return send(res, { profile: MOCK_PROFILE, user: ME });
+  if (path === "/api/auth/switch" && req.method === "POST")
+    return send(res, { ok: true });
+  if (path === "/api/auth/logout" && req.method === "POST")
+    return send(res, { ok: true });
+  if (path.match(/^\/api\/auth\/profiles\//) && req.method === "DELETE")
+    return send(res, { ok: true, activeId: MOCK_PROFILE.id });
+
   if (path === "/api/me")       return send(res, ME);
   if (path === "/api/projects") return send(res, PROJECTS);
   if (path === "/api/mentions") return send(res, [MRS[0]]);

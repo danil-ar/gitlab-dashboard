@@ -1,5 +1,6 @@
 const FILTERS_KEY  = "gl_filters";
 const PROJECTS_KEY = "gl_selected_projects";
+
 const DEFAULT_FILTERS = { state: "opened", scope: "all", search: "", project_id: "" };
 
 export function loadFilters() {

@@ -212,6 +212,11 @@ export default function TodoView() {
     try {
       const params = new URLSearchParams({ state, per_page: 100 });
       const r = await fetch(`/api/todos?${params}`);
+      if (r.status === 401) {
+        await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+        window.location.reload();
+        return;
+      }
       if (!r.ok) throw new Error(`Error ${r.status}: ${await r.text()}`);
       setTodos(await r.json());
     } catch (e) {
