@@ -6,7 +6,7 @@ import ProjectSettings from "./components/ProjectSettings";
 import Triage from "./views/Triage";
 import Browse from "./views/Browse";
 import Avatar from "./components/Avatar";
-import { IconRefresh, IconSearch, IconFilter } from "./components/icons";
+import { IconSearch, IconFilter } from "./components/icons";
 import { classifyMR } from "./utils/classifyMR";
 import { loadFilters, saveFilters, loadSelectedProjects, saveSelectedProjects } from "./utils/storage";
 
@@ -76,9 +76,26 @@ function App({ activeProfile, profiles, onRefresh }) {
   const [selectedProjectIds, setSelectedProjectIds] = useState(loadSelectedProjects);
   const [autoRefreshSecs, setAutoRefreshSecs]       = useState(0);
   const [searchInput, setSearchInput]               = useState(filters.search);
-  const searchRef = useRef(null);
+  const loadIdRef = useRef(0);
 
-  useEffect(() => { setSearchInput(filters.search); }, [filters.search]);
+  // clear stale data and search when switching view kinds
+  const prevViewKindRef = useRef(view.kind);
+  useEffect(() => {
+    if (prevViewKindRef.current === view.kind) return;
+    prevViewKindRef.current = view.kind;
+    setData(null);
+    setSearchInput("");
+  }, [view.kind]);
+
+  // debounce browse search
+  useEffect(() => {
+    if (view.kind !== "browse") return;
+    const t = setTimeout(() => {
+      setPage(1);
+      setFilters((prev) => ({ ...prev, search: searchInput }));
+    }, 400);
+    return () => clearTimeout(t);
+  }, [searchInput, view.kind]);
 
   const signOut = useCallback(async () => {
     await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
@@ -111,6 +128,7 @@ function App({ activeProfile, profiles, onRefresh }) {
   useEffect(() => { saveFilters(filters); }, [filters]);
 
   const load = useCallback(async (f, p, isTriage, projectIds) => {
+    const myLoadId = ++loadIdRef.current;
     setLoading(true);
     setError(null);
     try {
@@ -129,12 +147,54 @@ function App({ activeProfile, profiles, onRefresh }) {
       if (r.status === 401) { signOut(); return; }
       if (!r.ok) throw new Error(`Error ${r.status}: ${await r.text()}`);
       const json = await r.json();
+      if (loadIdRef.current !== myLoadId) return;
       setData(json);
       if (isTriage) setTriageItems(json.items ?? []);
+
+      const refs = (json.items ?? []).map((mr) => ({ project_id: mr.project_id, iid: mr.iid }));
+      if (refs.length > 0) {
+        const body = JSON.stringify(refs);
+        const headers = { "Content-Type": "application/json" };
+
+        const applyPatch = (patch) => {
+          if (loadIdRef.current !== myLoadId) return;
+          setData((prev) => prev ? { ...prev, items: prev.items.map(patch) } : prev);
+          if (isTriage) setTriageItems((prev) => prev.map(patch));
+        };
+
+        const bgFetch = (url, onData) => {
+          fetch(url, { method: "POST", headers, body })
+            .then((res) => (res.ok ? res.json() : null))
+            .then((data) => { if (data) onData(data); })
+            .catch(() => {});
+        };
+
+        bgFetch("/api/merge-requests/activities", (activities) =>
+          applyPatch((mr) => ({
+            ...mr,
+            activities_after_approval: activities[`${mr.project_id}_${mr.iid}`] ?? null,
+          }))
+        );
+
+        bgFetch("/api/merge-requests/discussion-stats-batch", (statsBatch) =>
+          applyPatch((mr) => ({
+            ...mr,
+            discussion_stats: statsBatch[`${mr.project_id}_${mr.iid}`] ?? null,
+          }))
+        );
+
+        bgFetch("/api/merge-requests/pipelines-batch", (pipelinesBatch) =>
+          applyPatch((mr) => ({
+            ...mr,
+            pipeline: pipelinesBatch[`${mr.project_id}_${mr.iid}`] ?? null,
+          }))
+        );
+      }
     } catch (e) {
-      setError(e.message);
+      if (loadIdRef.current !== myLoadId) return;
+      setError(e.message === "Failed to fetch" ? "Could not reach the server. Check your connection." : e.message);
     } finally {
-      setLoading(false);
+      if (loadIdRef.current === myLoadId) setLoading(false);
     }
   }, []);
 
@@ -156,17 +216,13 @@ function App({ activeProfile, profiles, onRefresh }) {
   }, [autoRefreshSecs, view.kind, load, filters, page, selectedProjectIds]);
 
   const setFilter = (key) => (e) => {
+    setData(null);
     setPage(1);
     setFilters((prev) => ({ ...prev, [key]: e.target.value }));
   };
 
-  const handleSearch = (e) => {
-    e.preventDefault();
-    setPage(1);
-    setFilters((prev) => ({ ...prev, search: searchRef.current.value }));
-  };
-
   const navigateBrowse = (state) => {
+    setData(null);
     setFilters((prev) => ({ ...prev, state }));
     setView({ kind: "browse" });
     setPage(1);
@@ -175,6 +231,13 @@ function App({ activeProfile, profiles, onRefresh }) {
   const handleSettingsClose = () => {
     setShowSettings(false);
     setSelectedProjectIds(loadSelectedProjects());
+  };
+
+  const handleProjectClick = (projectId) => {
+    setData(null);
+    setFilters((prev) => ({ ...prev, project_id: String(projectId), state: "opened" }));
+    setView({ kind: "browse" });
+    setPage(1);
   };
 
   const visibleProjects = (selectedProjectIds.size > 0
@@ -227,6 +290,7 @@ function App({ activeProfile, profiles, onRefresh }) {
         activeProfile={activeProfile}
         profiles={profiles}
         onRefresh={onRefresh}
+        onProjectClick={handleProjectClick}
       />
 
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
@@ -241,15 +305,9 @@ function App({ activeProfile, profiles, onRefresh }) {
               <IconSearch className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
               <input
                 type="text"
-                placeholder="Search merge requests…"
+                placeholder={view.kind === "browse" ? "Search by title…" : "Filter merge requests…"}
                 value={searchInput}
                 onChange={(e) => setSearchInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key !== "Enter") return;
-                  setPage(1);
-                  setFilters((prev) => ({ ...prev, search: searchInput }));
-                  if (view.kind !== "browse") navigateBrowse(filters.state);
-                }}
                 className={`w-full text-sm bg-gray-50 border border-gray-200 rounded-md pl-8 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors ${searchInput ? "pr-7" : "pr-3"}`}
               />
               {searchInput && (
@@ -270,14 +328,6 @@ function App({ activeProfile, profiles, onRefresh }) {
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            <button
-              onClick={() => { if (view.kind !== "todo") load(filters, page, view.kind === "triage", selectedProjectIds); }}
-              title="Refresh"
-              className="w-7 h-7 flex items-center justify-center rounded-md border border-gray-200 bg-white hover:bg-gray-50 text-gray-500 transition-colors"
-            >
-              <IconRefresh className="w-3.5 h-3.5" />
-            </button>
-
             <button
               onClick={() => setShowSettings(true)}
               className={`flex items-center gap-1.5 h-7 px-2.5 rounded-md border text-xs font-medium transition-colors ${
@@ -316,6 +366,7 @@ function App({ activeProfile, profiles, onRefresh }) {
             mentionedMRs={mentionedMRs}
             autoRefreshSecs={autoRefreshSecs}
             onAutoRefreshChange={setAutoRefreshSecs}
+            searchQuery={searchInput}
           />
         ) : (
           <Browse
@@ -323,7 +374,7 @@ function App({ activeProfile, profiles, onRefresh }) {
             filters={filters} setFilter={setFilter} projectOpts={projectOpts}
             needsMyApproval={needsMyApproval} setNeedsMyApproval={setNeedsMyApproval}
             refresh={() => load(filters, page, false, selectedProjectIds)}
-            searchRef={searchRef} handleSearch={handleSearch}
+            searchQuery={filters.search}
             page={page} setPage={setPage} currentUser={currentUser}
             autoRefreshSecs={autoRefreshSecs}
             onAutoRefreshChange={setAutoRefreshSecs}

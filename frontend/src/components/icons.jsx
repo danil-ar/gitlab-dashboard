@@ -3,7 +3,7 @@ export function BucketIcon({ id, className }) {
     needs:    "M8 2.5 14 13H2L8 2.5Z M8 6.5v3.5 M8 11.5v.01",
     approved: "M5 7v6.5a.5.5 0 0 0 .5.5h6.4a1 1 0 0 0 1-.8l.9-4.7a.5.5 0 0 0-.5-.6H10V5a1.5 1.5 0 0 0-3 0L5 7Zm0 0H2.5v6.5H5",
     mine:     "M4.5 3v10M11.5 7v6M4.5 3a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Zm0 10a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3Zm7 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3ZM11.5 7c-3 0-4-1.5-4-3",
-    mention:  "M2.5 9.5V3.5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v6m-11 0v3a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-3m-11 0h3l1 2h3l1-2h3",
+    mention:  "M8 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm0 4v.5M13 8A5 5 0 1 1 3 8a5 5 0 0 1 10 0Zm0 0c0 1.1-.4 2-1.5 2S10 9.1 10 8",
   }[id];
   return (
     <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -42,6 +42,14 @@ export function IconClock({ className }) {
     <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth="1.5">
       <circle cx="8" cy="8" r="6" />
       <path d="M8 5v3.5l2 1" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+export function IconSpin({ className = "w-3 h-3" }) {
+  return (
+    <svg className={`animate-spin ${className}`} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M8 2a6 6 0 1 0 6 6" strokeLinecap="round" />
     </svg>
   );
 }

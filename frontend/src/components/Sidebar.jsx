@@ -1,14 +1,17 @@
 import { useState, useEffect } from "react";
 import Avatar from "./Avatar";
 import { BucketIcon } from "./icons";
+import { Separator } from "@/components/ui/separator";
+import AboutModal from "./AboutModal";
 
 export default function Sidebar({
   counts, totalOpen, view, setView, navigateBrowse, filters, projects,
   selectedProjectIds, openProjectSettings, currentUser, projectCounts, todosCount,
-  activeProfile, profiles, onRefresh,
+  activeProfile, profiles, onRefresh, onProjectClick,
 }) {
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [showAddAccount, setShowAddAccount]   = useState(false);
+  const [showAbout, setShowAbout]             = useState(false);
 
   const handleSwitch = async (profileId) => {
     setShowProfileMenu(false);
@@ -37,14 +40,14 @@ export default function Sidebar({
       onClick={() => setView({ kind: "triage", bucket: id })}
       className={`group w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors ${
         view.kind === "triage" && view.bucket === id
-          ? "bg-white shadow-sm ring-1 ring-gray-200 text-gray-900 font-semibold"
-          : "text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+          ? "bg-white shadow-sm text-gray-900 font-semibold"
+          : "text-gray-600 hover:bg-gray-200/60 hover:text-gray-900"
       }`}
     >
       <BucketIcon id={id} className={`w-3.5 h-3.5 shrink-0 ${accent ?? "text-gray-400"}`} />
       <span className="flex-1 text-left">{label}</span>
       <span className={`text-[11px] font-semibold tabular-nums px-1.5 py-0.5 rounded-full ${
-        urgent ? "bg-orange-500 text-white" : "bg-gray-200 text-gray-600 group-hover:bg-gray-300"
+        urgent ? "bg-orange-500 text-white" : "bg-gray-200 text-gray-500 group-hover:bg-gray-300"
       }`}>
         {count}
       </span>
@@ -73,10 +76,10 @@ export default function Sidebar({
 
   if (showAddAccount) {
     return (
-      <aside className="w-72 shrink-0 bg-gray-50 border-r border-gray-200 flex flex-col h-full overflow-hidden">
+      <aside className="w-72 shrink-0 bg-gray-100 flex flex-col h-full overflow-hidden">
         <div className="flex items-center gap-2 px-4 py-3 border-b border-gray-200">
           <button onClick={() => setShowAddAccount(false)}
-            className="text-gray-400 hover:text-gray-600 p-1 rounded" title="Back">
+            className="text-gray-400 hover:text-gray-700 p-1 rounded" title="Back">
             <svg viewBox="0 0 16 16" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.5">
               <path d="M10 3L5 8l5 5" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
@@ -94,60 +97,64 @@ export default function Sidebar({
   }
 
   return (
-    <aside className="w-72 shrink-0 bg-gray-50 border-r border-gray-200 flex flex-col h-full overflow-hidden">
+    <>
+    {showAbout && <AboutModal onClose={() => setShowAbout(false)} />}
+    <aside className="w-72 shrink-0 bg-gray-100 flex flex-col h-full overflow-hidden">
       <div className="p-3 space-y-0.5">
         <p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Triage</p>
         {triageItem("needs",    "Needs your review",   counts.needs,    "text-orange-600", counts.needs > 0)}
-        {triageItem("approved", "You approved · open", counts.approved, "text-green-600")}
+        {triageItem("approved", "You approved",        counts.approved, "text-green-600")}
         {triageItem("mine",     "Your open MRs",       counts.mine,     "text-blue-600")}
         {triageItem("mention",  "Mentioned you",       counts.mention,  "text-purple-500")}
         <button
           onClick={() => setView({ kind: "todo" })}
           className={`group w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors ${
             view.kind === "todo"
-              ? "bg-white shadow-sm ring-1 ring-gray-200 text-gray-900 font-semibold"
-              : "text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+              ? "bg-white shadow-sm text-gray-900 font-semibold"
+              : "text-gray-600 hover:bg-gray-200/60 hover:text-gray-900"
           }`}
         >
-          <svg viewBox="0 0 16 16" className="w-3.5 h-3.5 shrink-0 text-blue-500" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <svg viewBox="0 0 16 16" className="w-3.5 h-3.5 shrink-0 text-blue-400" fill="none" stroke="currentColor" strokeWidth="1.5">
             <rect x="2" y="2" width="12" height="12" rx="1.5"/>
             <path d="M5 8l2 2 4-4" strokeLinecap="round" strokeLinejoin="round"/>
           </svg>
           <span className="flex-1 text-left">To-Do List</span>
           {todosCount > 0 && (
-            <span className="text-[11px] font-semibold tabular-nums px-1.5 py-0.5 rounded-full bg-gray-200 text-gray-600 group-hover:bg-gray-300">
+            <span className="text-[11px] font-semibold tabular-nums px-1.5 py-0.5 rounded-full bg-gray-200 text-gray-500 group-hover:bg-gray-300">
               {todosCount}
             </span>
           )}
         </button>
       </div>
 
-      <div className="border-t border-gray-200 p-3 space-y-0.5">
+      <Separator className="bg-gray-200" />
+      <div className="p-3 space-y-0.5">
         <p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Browse</p>
         {browseStates.map(({ state, label, count, icon }) => (
           <button key={state} onClick={() => navigateBrowse(state)}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors ${
               view.kind === "browse" && filters.state === state
-                ? "bg-white shadow-sm ring-1 ring-gray-200 text-gray-900 font-semibold"
-                : "text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+                ? "bg-white shadow-sm text-gray-900 font-semibold"
+                : "text-gray-600 hover:bg-gray-200/60 hover:text-gray-900"
             }`}
           >
             {icon}
             <span className="flex-1 text-left">{label}</span>
             {count != null && (
-              <span className="text-[11px] font-semibold tabular-nums px-1.5 py-0.5 rounded-full bg-gray-200 text-gray-600">{count}</span>
+              <span className="text-[11px] font-semibold tabular-nums px-1.5 py-0.5 rounded-full bg-gray-200 text-gray-500">{count}</span>
             )}
           </button>
         ))}
       </div>
 
-      <div className="border-t border-gray-200 p-3 flex-1 min-h-0 flex flex-col">
+      <Separator className="bg-gray-200" />
+      <div className="p-3 flex-1 min-h-0 flex flex-col">
         <div className="px-3 py-1.5 flex items-center gap-1.5">
           <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 flex-1">
             Projects{selectedProjectIds.size > 0 && ` · ${selectedProjectIds.size}`}
           </p>
           <button onClick={openProjectSettings} title="Configure projects"
-            className="text-gray-400 hover:text-gray-600 w-4 h-4 flex items-center justify-center rounded">
+            className="text-gray-400 hover:text-gray-700 w-4 h-4 flex items-center justify-center rounded">
             <svg viewBox="0 0 16 16" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
               <path d="M6.5 2h3l.5 1.5 1.2-.5 2 2-.5 1.2L14 7v2l-1.3.8.5 1.2-2 2-1.2-.5L9.5 14h-3l-.5-1.5-1.2.5-2-2 .5-1.2L2 9V7l1.3-.8-.5-1.2 2-2 1.2.5L6.5 2Z" strokeLinejoin="round"/>
               <circle cx="8" cy="8" r="2"/>
@@ -156,25 +163,29 @@ export default function Sidebar({
         </div>
         <div className="overflow-y-auto flex-1 -mx-1 px-1 space-y-0.5">
           {visibleProjects.map((p) => (
-            <div key={p.id} className="px-3 py-1 flex items-center gap-1 text-[12px] text-gray-600 font-mono hover:bg-gray-100 rounded">
+            <button
+              key={p.id}
+              onClick={() => onProjectClick?.(p.id)}
+              className="w-full px-3 py-1 flex items-center gap-1 text-[12px] text-gray-500 font-mono hover:bg-gray-200/60 hover:text-gray-700 rounded transition-colors text-left"
+            >
               <span className="truncate flex-1">{p.path_with_namespace}</span>
               {projectCounts[p.id] > 0 && (
                 <span className="text-[11px] text-gray-400 tabular-nums shrink-0 ml-1">{projectCounts[p.id]}</span>
               )}
-            </div>
+            </button>
           ))}
         </div>
       </div>
 
-      {/* Profile area */}
-      <div className="border-t border-gray-200 relative">
+      <Separator className="bg-gray-200" />
+      <div className="relative">
         <button
           onClick={() => setShowProfileMenu((s) => !s)}
-          className="w-full px-3 py-2.5 flex items-center gap-2.5 hover:bg-gray-100 transition-colors"
+          className="w-full px-3 py-2.5 flex items-center gap-2.5 hover:bg-gray-200/60 transition-colors"
         >
           {currentUser ? <Avatar user={currentUser} size="md" /> : <span className="w-7 h-7 rounded-full bg-gray-200 shrink-0" />}
           <div className="min-w-0 flex-1 leading-tight text-left">
-            <div className="text-[12px] font-semibold truncate text-gray-900">
+            <div className="text-[12px] font-semibold truncate text-gray-800">
               {activeProfile?.label ?? currentUser?.name ?? "—"}
             </div>
             <div className="text-[11px] text-gray-500 font-mono truncate">
@@ -187,7 +198,7 @@ export default function Sidebar({
         </button>
 
         {showProfileMenu && (
-          <div className="absolute bottom-full left-0 right-0 bg-white border border-gray-200 rounded-t-lg shadow-lg overflow-hidden z-10">
+          <div className="absolute bottom-full left-0 right-0 bg-white border border-gray-200 rounded-t-lg shadow-xl overflow-hidden z-10">
             {profiles.length > 1 && (
               <>
                 <p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Switch account</p>
@@ -198,15 +209,15 @@ export default function Sidebar({
                       className={`flex-1 flex items-center gap-2.5 px-3 py-2 text-sm transition-colors ${
                         p.id === activeProfile?.id
                           ? "bg-blue-50 text-blue-700 font-medium"
-                          : "text-gray-700 hover:bg-gray-50"
+                          : "text-gray-700 hover:bg-gray-100"
                       }`}
                     >
-                      <span className="w-5 h-5 rounded-full bg-gray-200 text-[10px] font-semibold flex items-center justify-center shrink-0 text-gray-600">
+                      <span className="w-5 h-5 rounded-full bg-gray-200 text-[10px] font-semibold flex items-center justify-center shrink-0 text-gray-500">
                         {(p.label?.[0] ?? "?").toUpperCase()}
                       </span>
                       <span className="flex-1 text-left truncate">{p.label}</span>
                       {p.id === activeProfile?.id && (
-                        <svg viewBox="0 0 16 16" className="w-3.5 h-3.5 text-blue-600 shrink-0" fill="none" stroke="currentColor" strokeWidth="2">
+                        <svg viewBox="0 0 16 16" className="w-3.5 h-3.5 text-blue-500 shrink-0" fill="none" stroke="currentColor" strokeWidth="2">
                           <path d="M3 8.5 6.5 12 13 4.5" strokeLinecap="round" strokeLinejoin="round"/>
                         </svg>
                       )}
@@ -214,7 +225,7 @@ export default function Sidebar({
                     {p.id !== activeProfile?.id && (
                       <button
                         onClick={() => handleRemove(p.id)}
-                        className="px-2 py-2 text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all"
+                        className="px-2 py-2 text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all"
                         title="Remove account"
                       >
                         <svg viewBox="0 0 16 16" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -229,7 +240,7 @@ export default function Sidebar({
             )}
             <button
               onClick={() => { setShowProfileMenu(false); setShowAddAccount(true); }}
-              className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+              className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors"
             >
               <svg viewBox="0 0 16 16" className="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" strokeWidth="1.5">
                 <circle cx="8" cy="8" r="5.5"/><path d="M8 5.5v5M5.5 8h5" strokeLinecap="round"/>
@@ -238,17 +249,25 @@ export default function Sidebar({
             </button>
             <button
               onClick={handleLogout}
-              className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
+              className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-red-500 hover:bg-red-50 transition-colors"
             >
               <svg viewBox="0 0 16 16" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
                 <path d="M6 2H3a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3M10.5 11l3-3-3-3M13.5 8H6" strokeLinecap="round" strokeLinejoin="round"/>
               </svg>
               Sign out
             </button>
+            <button
+              onClick={() => { setShowProfileMenu(false); setShowAbout(true); }}
+              className="w-full flex items-center justify-between px-3 py-2 border-t border-gray-100 hover:bg-gray-50 transition-colors"
+            >
+              <span className="text-[10px] text-gray-400 font-mono">GitLab MRs</span>
+              <span className="text-[10px] text-gray-400 font-mono">v{__APP_VERSION__}</span>
+            </button>
           </div>
         )}
       </div>
     </aside>
+    </>
   );
 }
 

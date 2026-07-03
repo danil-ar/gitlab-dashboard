@@ -99,6 +99,17 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="GitLab Dashboard API", lifespan=lifespan)
 
+
+@app.middleware("http")
+async def log_timing(request, call_next):
+    t = time.time()
+    response = await call_next(request)
+    elapsed = time.time() - t
+    if not request.url.path.startswith("/api/health"):
+        print(f"[timing] {request.method} {request.url.path} → {response.status_code} ({elapsed:.2f}s)", flush=True)
+    return response
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -146,6 +157,11 @@ class LoginBody(BaseModel):
 
 class SwitchBody(BaseModel):
     profile_id: str
+
+
+class MRRef(BaseModel):
+    project_id: int
+    iid: int
 
 
 # ─── auth endpoints ───────────────────────────────────────────────────────────
@@ -231,6 +247,8 @@ async def _get_current_user(gl: GL) -> dict:
 
 
 async def _find_approval_note(gl: GL, project_id: int, iid: int, user_id: int) -> str | None:
+    t0 = time.time()
+    pages_fetched = 0
     page = 1
     while True:
         r = await _http.get(
@@ -238,18 +256,23 @@ async def _find_approval_note(gl: GL, project_id: int, iid: int, user_id: int) -
             headers=gl.headers,
             params={"per_page": 100, "sort": "desc", "order_by": "created_at", "page": page},
         )
+        pages_fetched += 1
         if r.status_code != 200:
+            print(f"[approval_note] project={project_id} iid={iid} pages={pages_fetched} {time.time()-t0:.2f}s → not found (http {r.status_code})", flush=True)
             return None
         notes = r.json()
         if not notes:
+            print(f"[approval_note] project={project_id} iid={iid} pages={pages_fetched} {time.time()-t0:.2f}s → not found", flush=True)
             return None
         for note in notes:
             if (note.get("system") and
                     note.get("author", {}).get("id") == user_id and
                     note.get("body", "") == "approved this merge request"):
+                print(f"[approval_note] project={project_id} iid={iid} pages={pages_fetched} {time.time()-t0:.2f}s → found", flush=True)
                 return note["created_at"]
         total_pages = int(r.headers.get("X-Total-Pages", 1))
         if page >= total_pages:
+            print(f"[approval_note] project={project_id} iid={iid} pages={pages_fetched} {time.time()-t0:.2f}s → not found (all pages)", flush=True)
             return None
         page += 1
 
@@ -289,21 +312,18 @@ def _truncate(text: str, max_len: int = 120) -> str:
     return text[:max_len].rsplit(" ", 1)[0] + "…"
 
 
-def _compute_discussion_stats(discussions: list[dict]) -> dict:
-    total = resolved_count = 0
-    unresolved_previews: list[dict] = []
-    resolved_previews:   list[dict] = []
-    for d in discussions:
-        notes = d.get("notes", [])
-        resolvable = [n for n in notes if n.get("resolvable")]
-        if not resolvable:
-            continue
-        total += 1
-        first    = notes[0]
-        body     = (first.get("body") or "").replace("\n", " ")
-        position = first.get("position") or {}
-        user_replies = [n for n in notes[1:] if not n.get("system")]
-        reply_notes = [
+def _build_note_preview(notes: list[dict]) -> dict:
+    first        = notes[0]
+    body         = (first.get("body") or "").replace("\n", " ")
+    position     = first.get("position") or {}
+    user_replies = [n for n in notes[1:] if not n.get("system")]
+    return {
+        "note_id":    first.get("id"),
+        "author":     first.get("author", {}).get("name", ""),
+        "body":       _truncate(_strip_markdown(body), 500),
+        "created_at": first.get("created_at"),
+        "replies":    len(user_replies),
+        "reply_notes": [
             {
                 "note_id":    n.get("id"),
                 "author":     n.get("author", {}).get("name", ""),
@@ -311,25 +331,31 @@ def _compute_discussion_stats(discussions: list[dict]) -> dict:
                 "created_at": n.get("created_at"),
             }
             for n in user_replies[:5]
-        ]
-        preview = {
-            "note_id":    first.get("id"),
-            "author":     first.get("author", {}).get("name", ""),
-            "body":       _truncate(_strip_markdown(body), 500),
-            "created_at": first.get("created_at"),
-            "replies":    len(user_replies),
-            "reply_notes": reply_notes,
-            "file_path":  position.get("new_path") or position.get("old_path"),
-            "line":       position.get("new_line") or position.get("old_line"),
-        }
+        ],
+        "file_path":  position.get("new_path") or position.get("old_path"),
+        "line":       position.get("new_line") or position.get("old_line"),
+    }
+
+
+def _compute_discussion_stats(discussions: list[dict]) -> dict:
+    total = resolved_count = 0
+    unresolved_previews: list[dict] = []
+    resolved_previews:   list[dict] = []
+    for d in discussions:
+        notes      = d.get("notes", [])
+        resolvable = [n for n in notes if n.get("resolvable")]
+        if not resolvable:
+            continue
+        total += 1
+        preview = _build_note_preview(notes)
         if all(n.get("resolved") for n in resolvable):
             resolved_count += 1
             resolved_previews.append(preview)
         else:
             unresolved_previews.append(preview)
     return {
-        "resolved": resolved_count,
-        "total": total,
+        "resolved":            resolved_count,
+        "total":               total,
         "unresolved_previews": unresolved_previews,
         "resolved_previews":   resolved_previews,
     }
@@ -342,29 +368,7 @@ def _compute_new_threads(discussions: list[dict], since: datetime) -> tuple[int,
         if not notes or notes[0].get("system"):
             continue
         if _parse_dt(notes[0].get("created_at", "")) > since:
-            first    = notes[0]
-            body     = (first.get("body") or "").replace("\n", " ")
-            position = first.get("position") or {}
-            user_replies = [n for n in notes[1:] if not n.get("system")]
-            reply_notes = [
-                {
-                    "note_id":    n.get("id"),
-                    "author":     n.get("author", {}).get("name", ""),
-                    "body":       _truncate(_strip_markdown((n.get("body") or "").replace("\n", " ")), 300),
-                    "created_at": n.get("created_at"),
-                }
-                for n in user_replies[:5]
-            ]
-            previews.append({
-                "note_id":    first.get("id"),
-                "author":     first.get("author", {}).get("name", ""),
-                "body":       _truncate(_strip_markdown(body), 500),
-                "created_at": first.get("created_at"),
-                "replies":    len(user_replies),
-                "reply_notes": reply_notes,
-                "file_path":  position.get("new_path") or position.get("old_path"),
-                "line":       position.get("new_line") or position.get("old_line"),
-            })
+            previews.append(_build_note_preview(notes))
     return len(previews), previews
 
 
@@ -459,6 +463,28 @@ async def _fetch_project_mrs(gl: GL, project_id: int, params: dict) -> list[dict
     return []
 
 
+async def _fetch_targeted_mrs(gl: GL, params: dict) -> list[dict]:
+    current_user = await _get_current_user(gl)
+    user_id = current_user.get("id")
+    p = {**params, "per_page": 100}
+    batches = await asyncio.gather(
+        _fetch_global_mrs(gl, {**p, "scope": "created_by_me"}),
+        _fetch_global_mrs(gl, {**p, "scope": "assigned_to_me"}),
+        _fetch_global_mrs(gl, {**p, "scope": "all", "reviewer_id": user_id}) if user_id else asyncio.sleep(0),
+    )
+    seen: set = set()
+    result: list = []
+    for batch in batches:
+        if not batch:
+            continue
+        for mr in batch:
+            if mr["id"] not in seen:
+                seen.add(mr["id"])
+                result.append(mr)
+    result.sort(key=lambda m: m.get("updated_at", ""), reverse=True)
+    return result
+
+
 async def _fetch_global_mrs(gl: GL, params: dict) -> list[dict]:
     try:
         r = await _http.get(
@@ -477,35 +503,14 @@ async def _enrich(gl: GL, mr_list: list[dict]) -> list[dict]:
     if not mr_list:
         return []
 
-    current_user = await _get_current_user(gl)
-    me_id = current_user.get("id")
-
-    approved_by_list, discussions_list, pipeline_list = await asyncio.gather(
-        asyncio.gather(*[_approvals(gl, mr["project_id"], mr["iid"]) for mr in mr_list]),
-        asyncio.gather(*[_fetch_discussions(gl, mr["project_id"], mr["iid"]) for mr in mr_list]),
-        asyncio.gather(*[_latest_pipeline(gl, mr["project_id"], mr["iid"]) for mr in mr_list]),
+    t0 = time.time()
+    approved_by_list = await asyncio.gather(
+        *[_approvals(gl, mr["project_id"], mr["iid"]) for mr in mr_list]
     )
+    print(f"[enrich] approvals for {len(mr_list)} MRs: {time.time()-t0:.2f}s", flush=True)
 
     for mr, approved_by in zip(mr_list, approved_by_list):
         mr["approved_by_users"] = approved_by
-
-    async def _maybe_get_activities(mr: dict, discussions: list[dict]) -> dict | None:
-        if not me_id:
-            return None
-        if not any(u.get("id") == me_id for u in mr.get("approved_by_users", [])):
-            return None
-        return await _activities_after_approval(gl, mr["project_id"], mr["iid"], me_id, discussions)
-
-    activities_list = await asyncio.gather(
-        *[_maybe_get_activities(mr, d) for mr, d in zip(mr_list, discussions_list)]
-    )
-
-    for mr, discussions, pipeline, activities in zip(
-        mr_list, discussions_list, pipeline_list, activities_list
-    ):
-        mr["discussion_stats"]          = _compute_discussion_stats(discussions)
-        mr["pipeline"]                  = pipeline
-        mr["activities_after_approval"] = activities
 
     return mr_list
 
@@ -595,6 +600,73 @@ async def projects(gl: GL = Depends(get_gl)):
         "sort": "desc",
     })
     return r.json()
+
+
+@app.post("/api/merge-requests/activities")
+async def mr_activities_batch(refs: list[MRRef], gl: GL = Depends(get_gl)):
+    if not refs:
+        return {}
+    current_user = await _get_current_user(gl)
+    me_id = current_user.get("id")
+    if not me_id:
+        return {}
+
+    # approvals are cached from the recent main enrich call
+    approved_by_list = await asyncio.gather(
+        *[_approvals(gl, ref.project_id, ref.iid) for ref in refs]
+    )
+    approved_refs = [
+        ref for ref, approved_by in zip(refs, approved_by_list)
+        if any(u.get("id") == me_id for u in approved_by)
+    ]
+    if not approved_refs:
+        return {}
+
+    discussions_list = await asyncio.gather(
+        *[_fetch_discussions(gl, ref.project_id, ref.iid) for ref in approved_refs]
+    )
+    activities_list = await asyncio.gather(
+        *[_activities_after_approval(gl, ref.project_id, ref.iid, me_id, discussions)
+          for ref, discussions in zip(approved_refs, discussions_list)]
+    )
+    return {
+        f"{ref.project_id}_{ref.iid}": result
+        for ref, result in zip(approved_refs, activities_list)
+        if result
+    }
+
+
+@app.post("/api/merge-requests/pipelines-batch")
+async def mr_pipelines_batch(refs: list[MRRef], gl: GL = Depends(get_gl)):
+    if not refs:
+        return {}
+    pipeline_list = await asyncio.gather(
+        *[_latest_pipeline(gl, ref.project_id, ref.iid) for ref in refs]
+    )
+    return {
+        f"{ref.project_id}_{ref.iid}": pipeline
+        for ref, pipeline in zip(refs, pipeline_list)
+        if pipeline is not None
+    }
+
+
+@app.post("/api/merge-requests/discussion-stats-batch")
+async def mr_discussion_stats_batch(refs: list[MRRef], gl: GL = Depends(get_gl)):
+    if not refs:
+        return {}
+    discussions_list = await asyncio.gather(
+        *[_fetch_discussions(gl, ref.project_id, ref.iid) for ref in refs]
+    )
+    return {
+        f"{ref.project_id}_{ref.iid}": _compute_discussion_stats(discussions)
+        for ref, discussions in zip(refs, discussions_list)
+    }
+
+
+@app.get("/api/projects/{project_id}/merge_requests/{iid}/discussion-stats")
+async def mr_discussion_stats(project_id: int, iid: int, gl: GL = Depends(get_gl)):
+    discussions = await _fetch_discussions(gl, project_id, iid)
+    return _compute_discussion_stats(discussions)
 
 
 @app.post("/api/merge-requests/{project_id}/{iid}/approve")
@@ -701,24 +773,7 @@ async def merge_requests(
             mr_list.sort(key=lambda m: m.get("updated_at", ""), reverse=True)
         else:
             # No project filter → targeted queries to avoid scope=all timeout on large instances
-            current_user = await _get_current_user(gl)
-            user_id = current_user.get("id")
-            p = {**base_params, "per_page": 100}
-            batches = await asyncio.gather(
-                _fetch_global_mrs(gl, {**p, "scope": "created_by_me"}),
-                _fetch_global_mrs(gl, {**p, "scope": "assigned_to_me"}),
-                _fetch_global_mrs(gl, {**p, "scope": "all", "reviewer_id": user_id}) if user_id else asyncio.sleep(0),
-            )
-            seen = set()
-            mr_list = []
-            for batch in batches:
-                if not batch:
-                    continue
-                for mr in batch:
-                    if mr["id"] not in seen:
-                        seen.add(mr["id"])
-                        mr_list.append(mr)
-            mr_list.sort(key=lambda m: m.get("updated_at", ""), reverse=True)
+            mr_list = await _fetch_targeted_mrs(gl, base_params)
         total = len(mr_list)
         total_pages = 1
     elif project_id:
@@ -738,24 +793,7 @@ async def merge_requests(
         mr_list     = all_mrs[start: start + per_page]
     elif scope == "all":
         # scope=all on large instances (e.g. gitlab.com) times out — use targeted queries
-        current_user = await _get_current_user(gl)
-        user_id = current_user.get("id")
-        p = {**base_params, "per_page": 100}
-        batches = await asyncio.gather(
-            _fetch_global_mrs(gl, {**p, "scope": "created_by_me"}),
-            _fetch_global_mrs(gl, {**p, "scope": "assigned_to_me"}),
-            _fetch_global_mrs(gl, {**p, "scope": "all", "reviewer_id": user_id}) if user_id else asyncio.sleep(0),
-        )
-        seen: set = set()
-        all_mrs: list = []
-        for batch in batches:
-            if not batch:
-                continue
-            for mr in batch:
-                if mr["id"] not in seen:
-                    seen.add(mr["id"])
-                    all_mrs.append(mr)
-        all_mrs.sort(key=lambda m: m.get("updated_at", ""), reverse=True)
+        all_mrs     = await _fetch_targeted_mrs(gl, base_params)
         total       = len(all_mrs)
         total_pages = max(1, -(-total // per_page))
         start       = (page - 1) * per_page

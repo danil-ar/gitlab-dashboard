@@ -1,16 +1,22 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { BUCKETS } from "../constants";
 import { classifyMR } from "../utils/classifyMR";
 import { timeAgo } from "../utils/timeAgo";
-import { BucketIcon } from "../components/icons";
+import { BucketIcon, IconSpin } from "../components/icons";
+import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import BucketSection from "../components/BucketSection";
 import RefreshButton from "../components/RefreshButton";
 
-export default function Triage({ data, loading, error, currentUser, view, refresh, mentionedMRs, autoRefreshSecs, onAutoRefreshChange }) {
+export default function Triage({ data, loading, error, currentUser, view, refresh, mentionedMRs, autoRefreshSecs, onAutoRefreshChange, searchQuery = "" }) {
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [approving, setApproving]     = useState(false);
   const [reapproving, setReapproving] = useState(false);
   const [unapproving, setUnapproving] = useState(false);
+  const [doneMsg, setDoneMsg]         = useState(null);
+  const [sortBy, setSortBy]           = useState("newest");
+
+  useEffect(() => { setSelectedIds(new Set()); }, [view.bucket]);
 
   const toggleOne = (id) => setSelectedIds((prev) => {
     const next = new Set(prev);
@@ -18,19 +24,26 @@ export default function Triage({ data, loading, error, currentUser, view, refres
     return next;
   });
 
+  const sortFn = useMemo(() => ({
+    newest: (a, b) => new Date(b.updated_at) - new Date(a.updated_at),
+    oldest: (a, b) => new Date(a.updated_at) - new Date(b.updated_at),
+    title:  (a, b) => a.title.localeCompare(b.title),
+  })[sortBy], [sortBy]);
+
   const all = data?.items ?? [];
   const classified = useMemo(() => {
-    const out = { needs: [], approved: [], mine: [], mention: mentionedMRs ?? [] };
+    const q = searchQuery.trim().toLowerCase();
+    const match = (mr) => !q || mr.title.toLowerCase().includes(q);
+    const out = { needs: [], approved: [], mine: [], mention: (mentionedMRs ?? []).filter(match) };
     if (!currentUser) return out;
     for (const mr of all) {
+      if (!match(mr)) continue;
       const b = classifyMR(mr, currentUser.id);
       if (b) out[b].push(mr);
     }
-    ["needs", "approved", "mine", "mention"].forEach((k) =>
-      out[k].sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at))
-    );
+    ["needs", "approved", "mine", "mention"].forEach((k) => out[k].sort(sortFn));
     return out;
-  }, [all, currentUser, mentionedMRs]);
+  }, [all, currentUser, mentionedMRs, sortFn, searchQuery]);
 
   const order = view.bucket && view.bucket !== "all"
     ? [view.bucket, ...["needs", "approved", "mine", "mention"].filter((k) => k !== view.bucket)]
@@ -54,6 +67,8 @@ export default function Triage({ data, loading, error, currentUser, view, refres
     );
     setSelectedIds(new Set());
     setApproving(false);
+    setDoneMsg(`✓ Approved ${mrs.length} MR${mrs.length > 1 ? "s" : ""}`);
+    setTimeout(() => setDoneMsg(null), 2500);
     refresh();
   };
 
@@ -115,90 +130,124 @@ export default function Triage({ data, loading, error, currentUser, view, refres
   const approvedWithNewCommits = classified.approved.filter((m) => m.activities_after_approval).length;
 
   const hints = {
-    needs:    oldest ? `oldest ${timeAgo(oldest.updated_at)}` : "all clear",
+    needs:    oldest ? `oldest ${timeAgo(oldest.updated_at)}` : null,
     approved: classified.approved.length > 0
       ? (approvedWithNewCommits > 0
           ? `${approvedWithNewCommits} updated after your approval`
           : "waiting on other reviewers")
       : null,
     mine:     mineHint,
-    mention:  "tagged in discussion",
+    mention:  classified.mention.length > 0 ? "tagged in discussion" : null,
   };
 
   return (
     <main className="flex-1 overflow-auto">
       <div className="sticky top-0 z-20">
-      <header className="px-5 py-3.5 border-b border-gray-200 flex items-center gap-3 bg-white shrink-0">
-        <BucketIcon
-          id={view.bucket && view.bucket !== "all" ? view.bucket : "needs"}
-          className="w-5 h-5 text-orange-600 shrink-0"
-        />
-        <div className="min-w-0">
-          <h2 className="text-sm font-semibold text-gray-900">
-            {view.bucket && BUCKETS[view.bucket] ? BUCKETS[view.bucket].label : "Triage queue"}
-          </h2>
-          <p className="text-xs text-gray-500">
-            {all.filter((m) => m.state === "opened").length} open merge requests grouped by what needs your attention
-          </p>
+        <header className="px-5 py-3.5 border-b border-gray-200 flex items-center gap-3 bg-white shrink-0">
+          <BucketIcon
+            id={view.bucket && view.bucket !== "all" ? view.bucket : "needs"}
+            className="w-5 h-5 text-orange-600 shrink-0"
+          />
+          <div className="min-w-0">
+            <h2 className="text-sm font-semibold text-gray-900">
+              {view.bucket && BUCKETS[view.bucket] ? BUCKETS[view.bucket].label : "Triage queue"}
+            </h2>
+            <p className="text-xs text-gray-500">
+              {(() => { const n = all.filter((m) => m.state === "opened").length; return `${n} open merge request${n !== 1 ? "s" : ""} grouped by what needs your attention`; })()}
+            </p>
+          </div>
+          <div className="ml-auto shrink-0">
+            <RefreshButton onRefresh={refresh} loading={loading} interval={autoRefreshSecs} onIntervalChange={onAutoRefreshChange} />
+          </div>
+        </header>
+
+        <div className="px-5 py-2 bg-gray-50 border-b border-gray-200 flex items-center gap-2 text-xs text-gray-500">
+          <input
+            type="checkbox"
+            checked={allSelected}
+            onChange={toggleAll}
+            className="w-4 h-4 rounded accent-blue-600 cursor-pointer shrink-0"
+          />
+          <span className="text-gray-700 font-medium cursor-pointer select-none" onClick={toggleAll}>
+            {selectedIds.size > 0 ? `${selectedIds.size} selected` : "Select all"}
+          </span>
+          <span className="w-px h-3.5 bg-gray-300 mx-0.5" />
+          {doneMsg ? (
+            <span className="text-green-600 font-medium text-xs animate-in fade-in duration-200">{doneMsg}</span>
+          ) : (
+            <TooltipProvider>
+              <Button
+                size="xs"
+                onClick={handleApprove}
+                disabled={selectedIds.size === 0 || approving}
+                variant="ghost"
+              >
+                {approving ? <IconSpin /> : "✓"} Approve
+              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-flex">
+                    <Button variant="ghost" size="xs" onClick={handleReapprove} disabled={!canReapprove}
+                      className="text-amber-700 hover:bg-amber-100 hover:text-amber-700">
+                      {reapproving ? <IconSpin /> : "↺"} Re-approve
+                    </Button>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">
+                  {canReapprove
+                    ? "Re-approve selected MRs that were updated after your approval"
+                    : "Select MRs with new activity after your approval"}
+                </TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-flex">
+                    <Button variant="ghost" size="xs" onClick={handleUnapprove} disabled={!canUnapprove}
+                      className="text-red-600 hover:bg-red-50 hover:text-red-600">
+                      {unapproving ? <IconSpin /> : "✕"} Unapprove
+                    </Button>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">
+                  {canUnapprove
+                    ? "Withdraw your approval from selected MRs"
+                    : "Select MRs you have already approved"}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
+          <div className="ml-auto flex items-center gap-1.5 text-gray-400">
+            <span>Sort:</span>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value)}
+              className="text-gray-700 font-medium bg-transparent border-none outline-none cursor-pointer text-xs"
+            >
+              <option value="newest">Newest first</option>
+              <option value="oldest">Oldest first</option>
+              <option value="title">Title A→Z</option>
+            </select>
+          </div>
         </div>
-        <div className="ml-auto shrink-0">
-          <RefreshButton onRefresh={refresh} loading={loading} interval={autoRefreshSecs} onIntervalChange={onAutoRefreshChange} />
+      </div>
+
+      {error && (
+        <div className="mx-5 mt-4 p-3 bg-red-50 border border-red-200 rounded-md text-sm text-red-700 flex items-center gap-3">
+          <span className="flex-1">{error}</span>
+          <button onClick={refresh} className="shrink-0 text-red-600 hover:text-red-800 font-medium underline underline-offset-2">Retry</button>
         </div>
-      </header>
-
-      <div className="px-5 py-2 bg-gray-50 border-b border-gray-200 flex items-center gap-2.5 text-xs text-gray-500">
-        <input type="checkbox" checked={allSelected} onChange={toggleAll} className="rounded accent-blue-600" />
-        <span className="text-gray-700 font-medium cursor-pointer select-none" onClick={toggleAll}>
-          {selectedIds.size > 0 ? `${selectedIds.size} selected` : "Select all"}
-        </span>
-        <span className="w-px h-3.5 bg-gray-300 mx-0.5" />
-        <button
-          onClick={handleApprove}
-          disabled={selectedIds.size === 0 || approving}
-          className="px-2 py-0.5 rounded hover:bg-gray-200 text-gray-600 disabled:opacity-40 disabled:cursor-default flex items-center gap-1"
-        >
-          {approving ? (
-            <svg className="w-3 h-3 animate-spin" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M8 2a6 6 0 1 0 6 6" strokeLinecap="round"/>
-            </svg>
-          ) : "✓"} Approve
-        </button>
-        <button
-          onClick={handleReapprove}
-          disabled={!canReapprove}
-          className="px-2 py-0.5 rounded hover:bg-amber-100 text-amber-700 disabled:opacity-40 disabled:cursor-default flex items-center gap-1"
-        >
-          {reapproving ? (
-            <svg className="w-3 h-3 animate-spin" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M8 2a6 6 0 1 0 6 6" strokeLinecap="round"/>
-            </svg>
-          ) : "↺"} Re-approve
-        </button>
-        <button
-          onClick={handleUnapprove}
-          disabled={!canUnapprove}
-          className="px-2 py-0.5 rounded hover:bg-red-50 text-red-600 disabled:opacity-40 disabled:cursor-default flex items-center gap-1"
-        >
-          {unapproving ? (
-            <svg className="w-3 h-3 animate-spin" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M8 2a6 6 0 1 0 6 6" strokeLinecap="round"/>
-            </svg>
-          ) : "✕"} Unapprove
-        </button>
-        <span className="ml-auto">Sort: <span className="text-gray-900 font-medium">Newest first</span></span>
-      </div>
-      </div>
-
-      {error && <div className="mx-5 mt-4 p-3 bg-red-50 border border-red-200 rounded-md text-sm text-red-700">{error}</div>}
-
-      {loading ? (
-        <div className="text-center py-16 text-gray-400 text-sm">Loading…</div>
-      ) : (
-        order.map((id) => (
-          <BucketSection key={id} bucket={BUCKETS[id]} mrs={classified[id]} hint={hints[id]}
-                         currentUserId={currentUser?.id} selectedIds={selectedIds} onToggle={toggleOne} />
-        ))
       )}
+
+      {/* 2-column grid on 2xl screens */}
+      <div className="2xl:grid 2xl:grid-cols-2 2xl:gap-x-px 2xl:bg-gray-200">
+        {order.map((id) => (
+          <div key={id} className="bg-white">
+            <BucketSection bucket={BUCKETS[id]} mrs={classified[id]} hint={hints[id]}
+                           currentUserId={currentUser?.id} selectedIds={selectedIds} onToggle={toggleOne}
+                           dataLoaded={data !== null} searchActive={searchQuery.trim().length > 0} />
+          </div>
+        ))}
+      </div>
     </main>
   );
 }

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import Avatar from "./components/Avatar";
+import RefreshButton from "./components/RefreshButton";
 
 /* ─────────────────────────── action metadata ─────────────────────────── */
 
@@ -127,13 +128,21 @@ function TodoRow({ todo, onMarkDone, busy }) {
       </span>
 
       <div className="flex-1 min-w-0">
-        {/* project · iid + time */}
+        {/* project · iid + time/done */}
         <div className="flex items-center gap-1.5 min-w-0">
           <Glyph name={targetIconName(todo.target_type)} className={`w-3 h-3 shrink-0 ${targetIconColor(todo.target_type)}`} />
           <span className="font-mono text-[11px] text-gray-500 truncate">
             {path}<span className="text-gray-400">{refSymbol(todo.target_type)}</span>{iid}
           </span>
-          <span className="ml-auto text-[11px] text-gray-400 shrink-0">{timeAgo(todo.created_at)}</span>
+          <span className="ml-auto text-[11px] text-gray-400 shrink-0 group-hover:hidden">{timeAgo(todo.created_at)}</span>
+          <button
+            onClick={() => onMarkDone(todo.id)}
+            disabled={busy}
+            className="ml-auto hidden group-hover:flex items-center gap-1 text-[11px] text-gray-500 hover:text-green-700 disabled:opacity-40 shrink-0"
+            title="Mark as done"
+          >
+            <Glyph name="check" className="w-3 h-3 text-green-600" /> Done
+          </button>
         </div>
 
         {/* title */}
@@ -171,14 +180,6 @@ function TodoRow({ todo, onMarkDone, busy }) {
         )}
       </div>
 
-      <button
-        onClick={() => onMarkDone(todo.id)}
-        disabled={busy}
-        className="shrink-0 px-2 py-1 rounded text-[11px] text-gray-500 hover:bg-gray-200 hover:text-green-700 disabled:opacity-40 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity mt-0.5"
-        title="Mark as done"
-      >
-        <Glyph name="check" className="w-3 h-3 text-green-600" /> Done
-      </button>
     </div>
   );
 }
@@ -187,7 +188,7 @@ function TodoRow({ todo, onMarkDone, busy }) {
 
 function GroupHeader({ label, count, hint }) {
   return (
-    <div className="flex items-center gap-2 px-4 py-2 bg-gray-50 border-y border-gray-200 sticky top-0 z-[1]">
+    <div className="flex items-center gap-2 pb-2">
       <Glyph name="clock" className="w-3 h-3 text-gray-400" />
       <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">{label}</span>
       <span className="text-[11px] font-semibold tabular-nums px-1.5 py-0.5 rounded-full bg-gray-200 text-gray-700">{count}</span>
@@ -203,8 +204,10 @@ export default function TodoView() {
   const [loading, setLoading]  = useState(false);
   const [error, setError]      = useState(null);
   const state = "pending";
-  const [actionFilter, setAct] = useState("");
-  const [busyId, setBusyId]    = useState(null);
+  const [actionFilter, setAct]      = useState("");
+  const [busyId, setBusyId]         = useState(null);
+  const [confirmAll, setConfirmAll]  = useState(false);
+  const [autoRefreshSecs, setAutoRefreshSecs] = useState(0);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -228,6 +231,12 @@ export default function TodoView() {
 
   useEffect(() => { load(); }, [load]);
 
+  useEffect(() => {
+    if (autoRefreshSecs === 0) return;
+    const id = setInterval(load, autoRefreshSecs * 1000);
+    return () => clearInterval(id);
+  }, [autoRefreshSecs, load]);
+
   const markDone = async (id) => {
     setBusyId(id);
     try {
@@ -242,7 +251,7 @@ export default function TodoView() {
   };
 
   const markAllDone = async () => {
-    if (!window.confirm("Mark ALL pending todos as done?")) return;
+    setConfirmAll(false);
     setLoading(true);
     setAct("");
     try {
@@ -284,70 +293,78 @@ export default function TodoView() {
 
   return (
     <main className="flex-1 overflow-auto">
-      <header className="px-5 py-4 border-b border-gray-200 bg-white shrink-0">
-        <div className="flex items-start gap-3">
-          <Glyph name="inbox" className="w-5 h-5 text-blue-600 mt-0.5 shrink-0" />
-          <div className="flex-1 min-w-0">
-            <div className="flex items-baseline gap-3">
-              <h2 className="text-sm font-semibold text-gray-900">To-Do</h2>
-              <span className="text-sm text-gray-400 tabular-nums">{displayTodos.length}</span>
-            </div>
-            <p className="text-xs text-gray-500">MRs, issues, mentions, build failures, approvals</p>
+      <div className="max-w-5xl mx-auto px-6 py-6 space-y-4">
+        <div className="flex items-center gap-3 flex-wrap">
+          <Glyph name="inbox" className="w-4 h-4 text-blue-600 shrink-0" />
+          <span className="text-sm font-semibold text-gray-900">To-Do</span>
+          <span className="text-sm text-gray-400 tabular-nums">{displayTodos.length}</span>
+          <div className="flex flex-wrap items-center gap-2 flex-1">
+            {Object.entries(ACTIONS).map(([key, meta]) => {
+              const n = counts.byAction[key] ?? 0;
+              if (n === 0) return null;
+              const urgent = key === "build_failed" || key === "unmergeable";
+              return (
+                <FilterPill key={key} active={actionFilter === key}
+                            onClick={() => setAct(actionFilter === key ? "" : key)}
+                            count={n} urgent={urgent}>
+                  {meta.label.replace(" you","").replace(/^[a-z]/,(c) => c.toUpperCase())}
+                </FilterPill>
+              );
+            })}
           </div>
-          <button onClick={markAllDone}
-                  className="text-sm px-3 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50 flex items-center gap-1.5 shrink-0">
-            <Glyph name="check" className="w-3 h-3 text-green-600" /> Mark all done
-          </button>
-          <button onClick={load}
-                  className="text-sm px-3 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50 flex items-center gap-1.5 shrink-0">
-            <Glyph name="refresh" className="w-3 h-3" /> Refresh
-          </button>
+          <div className="flex items-center gap-2 ml-auto shrink-0">
+            {confirmAll ? (
+              <>
+                <span className="text-xs text-gray-600">Mark all as done?</span>
+                <button onClick={markAllDone}
+                        className="text-xs px-2.5 py-1.5 rounded-md bg-green-600 hover:bg-green-700 text-white font-medium transition-colors">
+                  Yes
+                </button>
+                <button onClick={() => setConfirmAll(false)}
+                        className="text-xs px-2.5 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50 transition-colors">
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button onClick={() => setConfirmAll(true)}
+                      className="text-sm px-3 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50 flex items-center gap-1.5">
+                <Glyph name="check" className="w-3 h-3 text-green-600" /> Mark all done
+              </button>
+            )}
+            <RefreshButton onRefresh={load} loading={loading} interval={autoRefreshSecs} onIntervalChange={setAutoRefreshSecs} />
+          </div>
         </div>
 
-        {/* Action filters (only show present action types) */}
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          {Object.entries(ACTIONS).map(([key, meta]) => {
-            const n = counts.byAction[key] ?? 0;
-            if (n === 0) return null;
-            const urgent = key === "build_failed" || key === "unmergeable";
-            return (
-              <FilterPill key={key} active={actionFilter === key}
-                          onClick={() => setAct(actionFilter === key ? "" : key)}
-                          count={n} urgent={urgent}>
-                {meta.label.replace(" you","").replace(/^[a-z]/,(c) => c.toUpperCase())}
-              </FilterPill>
-            );
-          })}
-        </div>
-      </header>
+        {error && <div className="p-3 bg-red-50 border border-red-200 rounded-md text-sm text-red-700">{error}</div>}
 
-      {error && <div className="mx-5 mt-4 p-3 bg-red-50 border border-red-200 rounded-md text-sm text-red-700">{error}</div>}
-
-      {loading ? (
-        <div className="text-center py-16 text-gray-400 text-sm">Loading…</div>
-      ) : displayTodos.length === 0 ? (
-        <div className="text-center py-20">
-          <Glyph name="check" className="w-8 h-8 text-green-500 mx-auto mb-2" />
-          <p className="text-sm text-gray-700 font-semibold">All caught up</p>
-          <p className="text-xs text-gray-400 mt-1">Nothing waiting on you.</p>
-        </div>
-      ) : (
-        <>
-          {groups.older.length > 0 && (
-            <>
-              <GroupHeader label="Older than 1 day" count={groups.older.length}
-                           hint={oldestTime && `oldest ${timeAgo(oldestTime)}`} />
-              {groups.older.map((t) => <TodoRow key={t.id} todo={t} onMarkDone={markDone} busy={busyId === t.id} />)}
-            </>
-          )}
-          {groups.today.length > 0 && (
-            <>
-              <GroupHeader label="Today" count={groups.today.length} />
-              {groups.today.map((t) => <TodoRow key={t.id} todo={t} onMarkDone={markDone} busy={busyId === t.id} />)}
-            </>
-          )}
-        </>
-      )}
+        {displayTodos.length === 0 && !loading ? (
+          <div className="text-center py-20">
+            <Glyph name="check" className="w-8 h-8 text-green-500 mx-auto mb-2" />
+            <p className="text-sm text-gray-700 font-semibold">All caught up</p>
+            <p className="text-xs text-gray-400 mt-1">Nothing waiting on you.</p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {groups.older.length > 0 && (
+              <div>
+                <GroupHeader label="Older than 1 day" count={groups.older.length}
+                             hint={oldestTime && `oldest ${timeAgo(oldestTime)}`} />
+                <div className="rounded-lg overflow-hidden border border-gray-200">
+                  {groups.older.map((t) => <TodoRow key={t.id} todo={t} onMarkDone={markDone} busy={busyId === t.id} />)}
+                </div>
+              </div>
+            )}
+            {groups.today.length > 0 && (
+              <div>
+                <GroupHeader label="Today" count={groups.today.length} />
+                <div className="rounded-lg overflow-hidden border border-gray-200">
+                  {groups.today.map((t) => <TodoRow key={t.id} todo={t} onMarkDone={markDone} busy={busyId === t.id} />)}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </main>
   );
 }
