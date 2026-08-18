@@ -353,12 +353,18 @@ def _compute_discussion_stats(discussions: list[dict]) -> dict:
             resolved_previews.append(preview)
         else:
             unresolved_previews.append(preview)
+    _sort_previews(unresolved_previews)
+    _sort_previews(resolved_previews)
     return {
         "resolved":            resolved_count,
         "total":               total,
         "unresolved_previews": unresolved_previews,
         "resolved_previews":   resolved_previews,
     }
+
+
+def _sort_previews(previews: list[dict]) -> None:
+    previews.sort(key=lambda p: p.get("created_at") or "", reverse=True)
 
 
 def _compute_new_threads(discussions: list[dict], since: datetime) -> tuple[int, list[dict]]:
@@ -369,6 +375,7 @@ def _compute_new_threads(discussions: list[dict], since: datetime) -> tuple[int,
             continue
         if _parse_dt(notes[0].get("created_at", "")) > since:
             previews.append(_build_note_preview(notes))
+    _sort_previews(previews)
     return len(previews), previews
 
 
