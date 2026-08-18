@@ -9,6 +9,16 @@ export function ThreadPreview({ p, url, dim = false }) {
   const fileName = p.file_path ? p.file_path.split("/").pop() : null;
   const hasReplies = p.replies > 0 && p.reply_notes?.length > 0;
 
+  // When the preview was built relative to a moment in time (post-approval
+  // activity), reply_notes holds only what arrived since — so count and label
+  // have to describe that subset, not the whole thread.
+  const newCount = p.new_replies ?? 0;
+  const relevant = newCount > 0 ? newCount : p.replies;
+  const hidden   = relevant - (p.reply_notes?.length ?? 0);
+  const repliesLabel = newCount > 0
+    ? `${newCount} new ${newCount === 1 ? "reply" : "replies"}`
+    : `${p.replies} ${p.replies === 1 ? "reply" : "replies"}`;
+
   return (
     <div className="rounded-lg border border-gray-200 bg-white">
       <a
@@ -43,15 +53,15 @@ export function ThreadPreview({ p, url, dim = false }) {
           {hasReplies ? (
             <button
               onClick={() => setExpanded(x => !x)}
-              className="w-full flex items-center gap-1.5 px-3 py-1.5 text-[11px] text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-colors rounded-b-lg"
+              className={`w-full flex items-center gap-1.5 px-3 py-1.5 text-[11px] hover:bg-gray-50 transition-colors rounded-b-lg ${
+                newCount > 0 ? "text-amber-700 font-medium hover:text-amber-800" : "text-gray-400 hover:text-gray-600"
+              }`}
             >
-              {p.replies} {p.replies === 1 ? "reply" : "replies"}
+              {repliesLabel}
               <span className="text-[9px] ml-auto">{expanded ? "▲" : "▼"}</span>
             </button>
           ) : (
-            <div className="px-3 py-1.5 text-[11px] text-gray-400">
-              {p.replies} {p.replies === 1 ? "reply" : "replies"}
-            </div>
+            <div className="px-3 py-1.5 text-[11px] text-gray-400">{repliesLabel}</div>
           )}
           {expanded && (
             <div className="px-3 pb-2.5 pt-2 space-y-2 border-t border-gray-100">
@@ -72,8 +82,8 @@ export function ThreadPreview({ p, url, dim = false }) {
                   </div>
                 </a>
               ))}
-              {p.replies > 5 && (
-                <div className="text-[11px] text-gray-400">+{p.replies - 5} more replies</div>
+              {hidden > 0 && (
+                <div className="text-[11px] text-gray-400">+{hidden} more</div>
               )}
             </div>
           )}

@@ -35,9 +35,11 @@ export default function MRRow({ mr, currentUserId, bucket, selected, onToggle })
           {isDraft && <Badge variant="secondary" className="shrink-0">Draft</Badge>}
           {mr.has_conflicts && <Badge variant="destructive" className="shrink-0">conflicts</Badge>}
           {activities && (() => {
+            const previews = activities.new_thread_previews ?? [];
             const parts = [
               activities.commits?.length > 0 && `+${activities.commits.length} commit${activities.commits.length > 1 ? "s" : ""}`,
               activities.new_threads > 0 && `+${activities.new_threads} thread${activities.new_threads > 1 ? "s" : ""}`,
+              activities.new_replies > 0 && `+${activities.new_replies} ${activities.new_replies > 1 ? "replies" : "reply"}`,
             ].filter(Boolean);
             return (
               <Popover>
@@ -75,15 +77,15 @@ export default function MRRow({ mr, currentUserId, bucket, selected, onToggle })
                         </div>
                       );
                     })()}
-                    {activities.new_threads > 0 && (
+                    {previews.length > 0 && (
                       <div className={activities.commits?.length > 0 ? "border-t border-gray-100 pt-2.5" : ""}>
                         <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-orange-500 mb-1.5">
                           <span className="w-1.5 h-1.5 rounded-full bg-orange-500 shrink-0" />
-                          New threads · {activities.new_threads}
+                          New discussion · {previews.length}
                         </div>
                         <div className="space-y-1.5">
-                          {(activities.new_thread_previews ?? []).map((p, i) => (
-                            <ThreadPreview key={i} p={p} url={mr.web_url} />
+                          {previews.map((p) => (
+                            <ThreadPreview key={p.note_id} p={p} url={mr.web_url} />
                           ))}
                         </div>
                       </div>

@@ -1,34 +1,46 @@
 # GitLab Dashboard
 
-Минималистичный дашборд для просмотра Merge Requests из GitLab.
+Дашборд для ревью и отслеживания Merge Requests из GitLab. Удобен, когда проектов несколько и хочется видеть всё в одном месте.
 
 ## Возможности
 
-- Список MR с фильтрацией по состоянию (opened / merged / closed), scope (all / created by me / assigned to me) и проекту
-- Статус пайплайна, аппруверы, лейблы, счётчик тредов (resolved/total)
-- Индикатор «я уже заапрувил» на карточке
-- Фильтр «Needs my approval»
-- Настройка видимых проектов через шестерёнку — все фильтры работают в рамках выбранных проектов
-- Автосохранение фильтров и выбора проектов в localStorage
+**Триаж** — открытые MR разложены по четырём корзинам:
+
+| Корзина | Что внутри |
+|---|---|
+| Needs your review | Открытые MR в твоих проектах, которые ты ещё не апрувил |
+| You approved | Ты уже апрувил, MR всё ещё ждёт мержа |
+| Your open MRs | Твои собственные открытые MR |
+| Mentioned you | MR, где тебя упомянули в комментарии |
+
+- Массовые действия: approve / unapprove / re-approve по выделенным MR, с явным отчётом, если что-то не прошло
+- По каждому MR: статус пайплайна со ссылкой, аппруверы, ассайни, лейблы, счётчик тредов (resolved/total)
+- Треды видно прямо в интерфейсе — превью комментариев, ответы, файл и строка
+- В корзине «You approved» подсвечивается активность **после твоего апрува**: новые коммиты, новые треды и новые ответы в старых тредах
+- **Browse** — merged/closed с поиском, фильтрами и постраничным выводом
+- **To-Do List** — GitLab-тудушки с фильтром по типу события и «отметить всё выполненным»
+- Несколько аккаунтов GitLab одновременно с переключением между ними
+- Фильтр видимых проектов; выбор и фильтры запоминаются отдельно для каждого аккаунта
+- Автообновление с настраиваемым интервалом
 
 ## Стек
 
 | Часть | Технология |
 |---|---|
-| Frontend | React + Vite + Tailwind CSS |
-| Backend | Python + FastAPI + httpx |
-| Запуск | Docker Compose |
+| Frontend | React 19 + Vite + Tailwind CSS 4 + Radix |
+| Backend | Python 3.12 + FastAPI + httpx |
+| Запуск | Docker Compose (nginx + uvicorn) |
 
 ## Запуск
 
 ### Через Docker Compose
 
 ```bash
-cp .env.example .env  # заполни GITLAB_URL и GITLAB_TOKEN
+cp .env.example .env      # заполни GITLAB_URL и SECRET_KEY
 docker compose up --build
 ```
 
-Открой `http://localhost:3000`.
+Открой `http://localhost:8085` и подключи аккаунт: адрес GitLab + Personal Access Token.
 
 ### Локально
 
@@ -36,7 +48,7 @@ docker compose up --build
 ```bash
 cd backend
 pip install -r requirements.txt
-GITLAB_URL=https://gitlab.example.com GITLAB_TOKEN=your_token uvicorn main:app --reload
+GITLAB_URL=https://gitlab.example.com SECRET_KEY=dev uvicorn main:app --reload
 ```
 
 **Frontend:**
@@ -46,9 +58,41 @@ npm install
 npm run dev
 ```
 
+Vite проксирует `/api` на `http://localhost:8000`, так что фронт и бэк живут на одном origin.
+
+## Доступ
+
+Токен вводится в самом приложении, а не в конфиге: он шифруется и лежит в httponly-куке сессии.
+Нужен Personal Access Token со скоупом `api` (для апрува и тудушек) или `read_api`, если хватает режима только для чтения.
+
 ## Конфигурация
 
 | Переменная | Описание |
 |---|---|
-| `GITLAB_URL` | Адрес GitLab инстанса, например `https://gitlab.com` |
-| `GITLAB_TOKEN` | Personal Access Token с правами `read_api` |
+| `GITLAB_URL` | Адрес GitLab, подставляется в форму входа как значение по умолчанию |
+| `GITLAB_DEFAULT_GROUP` | Группа, чьи проекты выбираются автоматически при первом открытии |
+| `SECRET_KEY` | **Обязателен.** Ключ шифрования сессионных кук. Без него сессии сбрасываются при каждом рестарте, а при `SECURE_COOKIE=true` приложение просто не стартует |
+| `SECURE_COOKIE` | `true`, когда раздаёшь по HTTPS — добавляет флаг `Secure` к куке |
+| `CORS_ORIGINS` | Список origin через запятую. Пусто = CORS выключен (нормальный режим, фронт и API на одном origin) |
+| `LOG_LEVEL` | `DEBUG` показывает каждый запрос к GitLab; по умолчанию `INFO` — только медленные (>1s) |
+
+Тонкая настройка нагрузки на GitLab (значения по умолчанию обычно менять не нужно):
+
+| Переменная | По умолчанию | Описание |
+|---|---|---|
+| `GITLAB_CONCURRENCY` | `10` | Потолок одновременных запросов к GitLab |
+| `CACHE_TTL` | `60` | Сколько секунд живут аппрувы, пайплайны и треды в кэше |
+| `APPROVAL_TTL` | `900` | Кэш активности после апрува; инвалидируется по `updated_at` самого MR |
+| `CACHE_MAXSIZE` | `4096` | Потолок записей в каждом кэше (LRU) |
+| `MAX_MR_PAGES` | `5` | Потолок страниц на один запрос списка MR (по 100 штук) |
+| `MAX_PROJECT_PAGES` | `10` | Потолок страниц при загрузке списка проектов |
+
+Сборка за корпоративным прокси — `REGISTRY`, `PIP_INDEX_URL`, `PIP_TRUSTED_HOST`, см. `.env.example`.
+
+## Тесты
+
+```bash
+cd backend
+pip install -r requirements-dev.txt
+pytest
+```

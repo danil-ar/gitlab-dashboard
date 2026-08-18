@@ -2,53 +2,135 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
+import os
+import re
 import time
 import uuid
+from collections import OrderedDict
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import datetime
-from fastapi import FastAPI, Query, Cookie, HTTPException, Depends
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
-from cryptography.fernet import Fernet
-from pydantic import BaseModel
+from urllib.parse import urlsplit
+
 import httpx
-import os
+from cryptography.fernet import Fernet
 from dotenv import load_dotenv
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import Response
+from pydantic import BaseModel
 
 load_dotenv()
 
+_LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+
+logging.basicConfig(level=_LOG_LEVEL, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
+log = logging.getLogger("dashboard")
+
+
+class _DropHealthChecks(logging.Filter):
+    """The container healthcheck hits /api/health every 10s; that is six access
+    log lines a minute saying nothing."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "/api/health" not in record.getMessage()
+
+
+logging.getLogger("uvicorn.access").addFilter(_DropHealthChecks())
+
+# httpx logs one line per outbound call at INFO. With a dashboard that fans out
+# across every project that buries our own logs, so it only speaks up on DEBUG.
+for _noisy in ("httpx", "httpcore"):
+    logging.getLogger(_noisy).setLevel(logging.DEBUG if _LOG_LEVEL == "DEBUG" else logging.WARNING)
+
 _DEFAULT_URL   = os.environ.get("GITLAB_URL", "").rstrip("/")
 _DEFAULT_GROUP = os.environ.get("GITLAB_DEFAULT_GROUP", "").strip()
-
-_raw_key = os.environ.get("SECRET_KEY", "")
-if _raw_key:
-    _fernet = Fernet(base64.urlsafe_b64encode(hashlib.sha256(_raw_key.encode()).digest()))
-else:
-    _fernet = Fernet(Fernet.generate_key())
-    print("WARNING: SECRET_KEY not set — sessions will reset on server restart")
 
 _COOKIE = "gl_session"
 _COOKIE_MAX_AGE = 60 * 60 * 24 * 365  # 1 year
 _SECURE_COOKIE = os.environ.get("SECURE_COOKIE", "").lower() in ("1", "true", "yes")
 
+_raw_key = os.environ.get("SECRET_KEY", "")
+if _raw_key:
+    _fernet = Fernet(base64.urlsafe_b64encode(hashlib.sha256(_raw_key.encode()).digest()))
+elif _SECURE_COOKIE:
+    raise RuntimeError("SECRET_KEY is required when SECURE_COOKIE is enabled")
+else:
+    _fernet = Fernet(Fernet.generate_key())
+    log.warning("SECRET_KEY not set — sessions will reset on every server restart")
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, "") or default)
+    except ValueError:
+        log.warning("%s is not a number, falling back to %s", name, default)
+        return default
+
+
+_CACHE_TTL         = _env_int("CACHE_TTL", 60)          # short-lived GitLab reads
+_APPROVAL_TTL      = _env_int("APPROVAL_TTL", 900)      # keyed by mr.updated_at, safe to keep longer
+_CACHE_MAXSIZE     = _env_int("CACHE_MAXSIZE", 4096)
+_CONCURRENCY       = _env_int("GITLAB_CONCURRENCY", 10)
+_MAX_PROJECT_PAGES = _env_int("MAX_PROJECT_PAGES", 10)  # /projects, 100 per page
+_MAX_MR_PAGES      = _env_int("MAX_MR_PAGES", 5)        # per merge-request query
+_MAX_NOTE_PAGES    = _env_int("MAX_NOTE_PAGES", 20)     # approval-note scan
+
 _http: httpx.AsyncClient
-_user_cache: dict[str, dict] = {}
-
-_CACHE_TTL = 60  # seconds
-_approvals_cache:   dict[tuple, tuple[float, list]]       = {}
-_discussions_cache: dict[tuple, tuple[float, list]]       = {}
-_pipeline_cache:    dict[tuple, tuple[float, dict | None]] = {}
+_gitlab_slots: asyncio.Semaphore
 
 
-def _cache_get(store: dict, key: tuple):
-    entry = store.get(key)
-    if entry and entry[0] > time.time():
-        return entry[1]
-    return None
+# ─── cache ────────────────────────────────────────────────────────────────────
+
+_MISS = object()
 
 
-def _cache_set(store: dict, key: tuple, value) -> None:
-    store[key] = (time.time() + _CACHE_TTL, value)
+class TTLCache:
+    """Bounded LRU cache with per-entry expiry.
+
+    `None` is a cacheable value: misses come back as the `_MISS` sentinel so an
+    MR without a pipeline is not re-fetched on every single refresh.
+    """
+
+    __slots__ = ("_ttl", "_maxsize", "_data")
+
+    def __init__(self, ttl: int, maxsize: int = _CACHE_MAXSIZE):
+        self._ttl = ttl
+        self._maxsize = maxsize
+        self._data: OrderedDict[tuple, tuple[float, object]] = OrderedDict()
+
+    def get(self, key: tuple):
+        entry = self._data.get(key)
+        if entry is None:
+            return _MISS
+        expires, value = entry
+        if expires <= time.monotonic():
+            self._data.pop(key, None)
+            return _MISS
+        self._data.move_to_end(key)
+        return value
+
+    def set(self, key: tuple, value) -> None:
+        self._data[key] = (time.monotonic() + self._ttl, value)
+        self._data.move_to_end(key)
+        while len(self._data) > self._maxsize:
+            self._data.popitem(last=False)
+
+    def delete(self, key: tuple) -> None:
+        self._data.pop(key, None)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+
+_user_cache        = TTLCache(_CACHE_TTL * 5, maxsize=256)
+_approvals_cache   = TTLCache(_CACHE_TTL)
+_discussions_cache = TTLCache(_CACHE_TTL)
+_pipeline_cache    = TTLCache(_CACHE_TTL)
+_approval_at_cache = TTLCache(_APPROVAL_TTL)
+_activities_cache  = TTLCache(_APPROVAL_TTL)
 
 
 # ─── session helpers ──────────────────────────────────────────────────────────
@@ -59,7 +141,7 @@ def _encrypt(data: dict) -> str:
 
 def _decrypt(value: str) -> dict | None:
     try:
-        return json.loads(_fernet.decrypt(value.encode()))
+        return json.loads(_fernet.decrypt(value.encode(), ttl=_COOKIE_MAX_AGE))
     except Exception:
         return None
 
@@ -76,6 +158,9 @@ def _write_cookie(response: Response, session: dict) -> None:
         _COOKIE,
         _encrypt(session),
         httponly=True,
+        # "lax" (not "strict") on purpose: it already blocks cross-site POSTs, and
+        # "strict" would drop the cookie when someone opens the dashboard from a
+        # link in Confluence/Slack, dumping them on the login screen.
         samesite="lax",
         max_age=_COOKIE_MAX_AGE,
         path="/",
@@ -91,51 +176,170 @@ def _safe(profile: dict) -> dict:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _http
-    _http = httpx.AsyncClient(timeout=30, follow_redirects=True)
+    global _http, _gitlab_slots
+    _http = httpx.AsyncClient(
+        timeout=30,
+        follow_redirects=True,
+        limits=httpx.Limits(max_connections=_CONCURRENCY * 2, max_keepalive_connections=_CONCURRENCY),
+    )
+    _gitlab_slots = asyncio.Semaphore(_CONCURRENCY)
+    log.info("started — concurrency=%s cache_ttl=%ss", _CONCURRENCY, _CACHE_TTL)
     yield
     await _http.aclose()
 
 
 app = FastAPI(title="GitLab Dashboard API", lifespan=lifespan)
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+
+# A one-element list, not an int: asyncio tasks copy the context but share the
+# object inside it, so fan-out calls still count towards the originating request.
+_gitlab_calls: ContextVar[list] = ContextVar("gitlab_calls")
+
+
+def _count_gitlab_call() -> None:
+    try:
+        _gitlab_calls.get()[0] += 1
+    except LookupError:
+        pass
 
 
 @app.middleware("http")
 async def log_timing(request, call_next):
-    t = time.time()
+    calls = [0]
+    _gitlab_calls.set(calls)
+    t = time.monotonic()
     response = await call_next(request)
-    elapsed = time.time() - t
+    elapsed = time.monotonic() - t
     if not request.url.path.startswith("/api/health"):
-        print(f"[timing] {request.method} {request.url.path} → {response.status_code} ({elapsed:.2f}s)", flush=True)
+        # Fan-out is this dashboard's main cost, so the count sits next to the
+        # duration: "slow" and "slow because it made 90 calls" need different fixes.
+        level = logging.INFO if elapsed > 1 or calls[0] > 20 else logging.DEBUG
+        log.log(level, "%s %s → %s (%.2fs, %d GitLab calls)",
+                request.method, request.url.path, response.status_code, elapsed, calls[0])
     return response
 
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["GET", "POST", "DELETE"],
-    allow_headers=["*"],
-)
+# Same-origin in every supported setup (nginx proxies /api, vite proxies it in dev),
+# so CORS stays off unless an origin is opted in explicitly.
+_cors_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "DELETE"],
+        allow_headers=["*"],
+    )
+    log.info("CORS enabled for %s", _cors_origins)
 
 
-# ─── GitLab context ───────────────────────────────────────────────────────────
+# ─── GitLab client ────────────────────────────────────────────────────────────
+
+_GITLAB_ERRORS = {
+    401: "GitLab rejected the token",
+    403: "Access denied by GitLab",
+    404: "Not found in GitLab",
+    429: "GitLab rate limit reached — try again shortly",
+}
+
+
+def _gitlab_error(r: httpx.Response, path: str) -> HTTPException:
+    log.warning("gitlab %s → %s: %s", path, r.status_code, r.text[:300])
+    detail = _GITLAB_ERRORS.get(r.status_code, f"GitLab returned {r.status_code}")
+    return HTTPException(status_code=r.status_code, detail=detail)
+
+
+def _fingerprint(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()[:16]
+
 
 class GL:
+    """Per-request GitLab context. All outbound calls funnel through here so the
+    concurrency limit, error mapping and cache namespacing apply everywhere."""
+
     def __init__(self, url: str, token: str):
         self.url = url.rstrip("/")
         self.token = token
         self.headers = {"PRIVATE-TOKEN": token}
+        # Caches are namespaced per token: two people sharing one backend must
+        # never read each other's projects out of the cache.
+        self.fp = _fingerprint(token)
+
+    def key(self, *parts) -> tuple:
+        return (self.fp, self.url, *parts)
+
+    def _api(self, path: str) -> str:
+        return f"{self.url}/api/v4{path}"
+
+    async def _send(self, method: str, url: str, **kw) -> httpx.Response:
+        _count_gitlab_call()
+        async with _gitlab_slots:
+            try:
+                return await _http.request(method, url, headers=self.headers, **kw)
+            except httpx.TimeoutException:
+                raise HTTPException(status_code=504, detail="GitLab API timeout")
+            except httpx.RequestError as e:
+                log.warning("gitlab %s %s failed: %s", method, url, e)
+                raise HTTPException(status_code=502, detail="GitLab is unreachable")
 
     async def get(self, path: str, params: dict | None = None) -> httpx.Response:
-        try:
-            r = await _http.get(f"{self.url}/api/v4{path}", headers=self.headers, params=params)
-        except httpx.TimeoutException:
-            raise HTTPException(status_code=504, detail="GitLab API timeout")
-        except httpx.RequestError as e:
-            raise HTTPException(status_code=502, detail=f"GitLab unreachable: {e}")
+        r = await self._send("GET", self._api(path), params=params)
         if r.status_code >= 400:
-            raise HTTPException(status_code=r.status_code, detail=r.text)
+            raise _gitlab_error(r, path)
         return r
+
+    async def try_get(self, path: str, params: dict | None = None) -> httpx.Response | None:
+        """GET that degrades to None — for per-MR extras where one failing
+        project must not take down the whole dashboard."""
+        try:
+            r = await self._send("GET", self._api(path), params=params)
+        except HTTPException as e:
+            log.debug("gitlab %s unavailable: %s", path, e.detail)
+            return None
+        if r.status_code >= 400:
+            log.debug("gitlab %s → %s", path, r.status_code)
+            return None
+        return r
+
+    async def fetch_url(self, url: str) -> httpx.Response:
+        """GET an absolute GitLab URL (avatars and other non-/api/v4 assets)."""
+        return await self._send("GET", url)
+
+    async def post(self, path: str, ok: tuple[int, ...] = (200, 201, 204)) -> httpx.Response:
+        r = await self._send("POST", self._api(path))
+        if r.status_code not in ok:
+            raise _gitlab_error(r, path)
+        return r
+
+    async def get_all(self, path: str, params: dict, max_pages: int) -> list:
+        """Follow GitLab pagination instead of silently returning only page 1."""
+        params = {**params, "per_page": params.get("per_page", 100), "page": 1}
+        first = await self.try_get(path, params)
+        if first is None:
+            return []
+        items = first.json()
+        if not isinstance(items, list):
+            return []
+        try:
+            total_pages = int(first.headers.get("X-Total-Pages") or 1)
+        except ValueError:
+            total_pages = 1
+        if total_pages > max_pages:
+            log.info("%s has %s pages, capped at %s", path, total_pages, max_pages)
+            total_pages = max_pages
+        if total_pages <= 1:
+            return items
+        rest = await asyncio.gather(
+            *[self.try_get(path, {**params, "page": p}) for p in range(2, total_pages + 1)]
+        )
+        for r in rest:
+            if r is None:
+                continue
+            chunk = r.json()
+            if isinstance(chunk, list):
+                items.extend(chunk)
+        return items
 
 
 def get_gl(session: dict = Depends(_read_session)) -> GL:
@@ -162,6 +366,9 @@ class SwitchBody(BaseModel):
 class MRRef(BaseModel):
     project_id: int
     iid: int
+    # Lets the expensive post-approval lookups be cached until the MR actually
+    # changes, instead of expiring on a timer.
+    updated_at: str = ""
 
 
 # ─── auth endpoints ───────────────────────────────────────────────────────────
@@ -180,7 +387,7 @@ async def auth_login(body: LoginBody, response: Response, session: dict = Depend
     gl = GL(body.gitlab_url.strip().rstrip("/"), body.token.strip())
     r = await gl.get("/user")
     user = r.json()
-    _user_cache[gl.token] = user
+    _user_cache.set(gl.key("user"), user)
 
     existing = next(
         (p for p in session.get("profiles", []) if p["token"] == gl.token and p["gitlabUrl"] == gl.url),
@@ -235,74 +442,103 @@ async def auth_logout(response: Response):
 
 # ─── domain helpers ───────────────────────────────────────────────────────────
 
-def _parse_dt(s: str) -> datetime:
-    return datetime.fromisoformat(s.replace("Z", "+00:00"))
+def _parse_dt(s: str) -> datetime | None:
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 async def _get_current_user(gl: GL) -> dict:
-    if gl.token not in _user_cache:
-        r = await gl.get("/user")
-        _user_cache[gl.token] = r.json()
-    return _user_cache[gl.token]
+    key = gl.key("user")
+    cached = _user_cache.get(key)
+    if cached is not _MISS:
+        return cached
+    r = await gl.get("/user")
+    user = r.json()
+    _user_cache.set(key, user)
+    return user
 
 
-async def _find_approval_note(gl: GL, project_id: int, iid: int, user_id: int) -> str | None:
-    t0 = time.time()
-    pages_fetched = 0
+async def _find_approval_note(gl: GL, project_id: int, iid: int, user_id: int, updated_at: str) -> str | None:
+    """Timestamp of the newest 'approved this merge request' system note.
+
+    The scan pages through an MR's whole note history, so both hits and misses
+    are cached — a miss is the expensive case and used to be repeated on every
+    single refresh.
+    """
+    key = gl.key("approval_at", project_id, iid, user_id, updated_at)
+    cached = _approval_at_cache.get(key)
+    if cached is not _MISS:
+        return cached
+
+    t0 = time.monotonic()
+    found: str | None = None
     page = 1
-    while True:
-        r = await _http.get(
-            f"{gl.url}/api/v4/projects/{project_id}/merge_requests/{iid}/notes",
-            headers=gl.headers,
-            params={"per_page": 100, "sort": "desc", "order_by": "created_at", "page": page},
+    while page <= _MAX_NOTE_PAGES:
+        r = await gl.try_get(
+            f"/projects/{project_id}/merge_requests/{iid}/notes",
+            {"per_page": 100, "sort": "desc", "order_by": "created_at", "page": page},
         )
-        pages_fetched += 1
-        if r.status_code != 200:
-            print(f"[approval_note] project={project_id} iid={iid} pages={pages_fetched} {time.time()-t0:.2f}s → not found (http {r.status_code})", flush=True)
-            return None
+        if r is None:
+            return None  # transient failure: do not cache a wrong answer
         notes = r.json()
         if not notes:
-            print(f"[approval_note] project={project_id} iid={iid} pages={pages_fetched} {time.time()-t0:.2f}s → not found", flush=True)
-            return None
-        for note in notes:
-            if (note.get("system") and
-                    note.get("author", {}).get("id") == user_id and
-                    note.get("body", "") == "approved this merge request"):
-                print(f"[approval_note] project={project_id} iid={iid} pages={pages_fetched} {time.time()-t0:.2f}s → found", flush=True)
-                return note["created_at"]
-        total_pages = int(r.headers.get("X-Total-Pages", 1))
+            break
+        found = next(
+            (
+                n["created_at"]
+                for n in notes
+                if n.get("system")
+                and n.get("author", {}).get("id") == user_id
+                and n.get("body", "") == "approved this merge request"
+            ),
+            None,
+        )
+        if found:
+            break
+        try:
+            total_pages = int(r.headers.get("X-Total-Pages") or 1)
+        except ValueError:
+            total_pages = 1
         if page >= total_pages:
-            print(f"[approval_note] project={project_id} iid={iid} pages={pages_fetched} {time.time()-t0:.2f}s → not found (all pages)", flush=True)
-            return None
+            break
         page += 1
+
+    log.debug(
+        "approval note %s!%s pages=%s %.2fs → %s",
+        project_id, iid, page, time.monotonic() - t0, "found" if found else "none",
+    )
+    _approval_at_cache.set(key, found)
+    return found
 
 
 async def _fetch_discussions(gl: GL, project_id: int, iid: int) -> list[dict]:
-    key = (gl.url, project_id, iid)
-    cached = _cache_get(_discussions_cache, key)
-    if cached is not None:
+    key = gl.key("discussions", project_id, iid)
+    cached = _discussions_cache.get(key)
+    if cached is not _MISS:
         return cached
-    try:
-        r = await _http.get(
-            f"{gl.url}/api/v4/projects/{project_id}/merge_requests/{iid}/discussions",
-            headers=gl.headers,
-            params={"per_page": 100},
-        )
-        if r.status_code == 200:
-            result = r.json()
-            _cache_set(_discussions_cache, key, result)
-            return result
-    except Exception as e:
-        print(f"[discussions] project={project_id} iid={iid} error: {e}")
-    return []
+    r = await gl.try_get(f"/projects/{project_id}/merge_requests/{iid}/discussions", {"per_page": 100})
+    if r is None:
+        return []
+    result = r.json()
+    if not isinstance(result, list):
+        return []
+    _discussions_cache.set(key, result)
+    return result
+
+
+_MD_HEADING = re.compile(r"^#{1,6}\s+", re.MULTILINE)
+_MD_RULE    = re.compile(r"^[-*_]{3,}\s*$", re.MULTILINE)
+_MD_BULLET  = re.compile(r"^[\*\-\+]\s+", re.MULTILINE)
+_MD_NUMBER  = re.compile(r"^\d+\.\s+", re.MULTILINE)
 
 
 def _strip_markdown(text: str) -> str:
-    import re
-    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
-    text = re.sub(r'^[-*_]{3,}\s*$', '', text, flags=re.MULTILINE)
-    text = re.sub(r'^[\*\-\+]\s+', '', text, flags=re.MULTILINE)
-    text = re.sub(r'^\d+\.\s+', '', text, flags=re.MULTILINE)
+    for pattern in (_MD_HEADING, _MD_RULE, _MD_BULLET, _MD_NUMBER):
+        text = pattern.sub("", text)
     return text.strip()
 
 
@@ -312,29 +548,53 @@ def _truncate(text: str, max_len: int = 120) -> str:
     return text[:max_len].rsplit(" ", 1)[0] + "…"
 
 
-def _build_note_preview(notes: list[dict]) -> dict:
+def _clean(body: str | None, max_len: int) -> str:
+    return _truncate(_strip_markdown((body or "").replace("\n", " ")), max_len)
+
+
+def _build_note_preview(notes: list[dict], since: datetime | None = None) -> dict:
+    """Preview of one discussion thread.
+
+    With `since`, the reply list is narrowed to what arrived after that moment —
+    that is what makes 'new replies on a thread you already read' visible.
+    """
     first        = notes[0]
-    body         = (first.get("body") or "").replace("\n", " ")
     position     = first.get("position") or {}
     user_replies = [n for n in notes[1:] if not n.get("system")]
+    new_replies  = (
+        [n for n in user_replies if _is_after(n.get("created_at"), since)] if since else []
+    )
+    shown = new_replies if since else user_replies
     return {
-        "note_id":    first.get("id"),
-        "author":     first.get("author", {}).get("name", ""),
-        "body":       _truncate(_strip_markdown(body), 500),
-        "created_at": first.get("created_at"),
-        "replies":    len(user_replies),
+        "note_id":     first.get("id"),
+        "author":      first.get("author", {}).get("name", ""),
+        "body":        _clean(first.get("body"), 500),
+        "created_at":  first.get("created_at"),
+        "replies":     len(user_replies),
+        "new_replies": len(new_replies),
         "reply_notes": [
             {
                 "note_id":    n.get("id"),
                 "author":     n.get("author", {}).get("name", ""),
-                "body":       _truncate(_strip_markdown((n.get("body") or "").replace("\n", " ")), 300),
+                "body":       _clean(n.get("body"), 300),
                 "created_at": n.get("created_at"),
             }
-            for n in user_replies[:5]
+            for n in shown[-5:]
         ],
         "file_path":  position.get("new_path") or position.get("old_path"),
         "line":       position.get("new_line") or position.get("old_line"),
     }
+
+
+def _is_after(iso: str | None, since: datetime | None) -> bool:
+    if since is None or not iso:
+        return False
+    dt = _parse_dt(iso)
+    return dt is not None and dt > since
+
+
+def _sort_previews(previews: list[dict]) -> None:
+    previews.sort(key=lambda p: p.get("created_at") or "", reverse=True)
 
 
 def _compute_discussion_stats(discussions: list[dict]) -> dict:
@@ -363,127 +623,113 @@ def _compute_discussion_stats(discussions: list[dict]) -> dict:
     }
 
 
-def _sort_previews(previews: list[dict]) -> None:
-    previews.sort(key=lambda p: p.get("created_at") or "", reverse=True)
+def _compute_new_threads(discussions: list[dict], since: datetime) -> tuple[int, int, list[dict]]:
+    """Discussion activity after `since`.
 
-
-def _compute_new_threads(discussions: list[dict], since: datetime) -> tuple[int, list[dict]]:
+    Counts both brand-new threads and replies landing on threads that already
+    existed — a reply on an old thread is exactly the kind of "answer my review
+    comment" event that must not be missed.
+    """
+    new_threads = 0
+    new_replies = 0
     previews: list[dict] = []
     for d in discussions:
         notes = d.get("notes", [])
         if not notes or notes[0].get("system"):
             continue
-        if _parse_dt(notes[0].get("created_at", "")) > since:
+        if _is_after(notes[0].get("created_at"), since):
+            new_threads += 1
             previews.append(_build_note_preview(notes))
+            continue
+        preview = _build_note_preview(notes, since=since)
+        if preview["new_replies"] > 0:
+            new_replies += preview["new_replies"]
+            previews.append(preview)
     _sort_previews(previews)
-    return len(previews), previews
+    return new_threads, new_replies, previews
 
 
-async def _activities_after_approval(
-    gl: GL, project_id: int, iid: int, user_id: int, discussions: list[dict]
-) -> dict | None:
-    try:
-        last_approval_at = await _find_approval_note(gl, project_id, iid, user_id)
-        if last_approval_at is None:
-            return None
-        approval_dt = _parse_dt(last_approval_at)
-        commits_r = await _http.get(
-            f"{gl.url}/api/v4/projects/{project_id}/merge_requests/{iid}/commits",
-            headers=gl.headers,
-            params={"per_page": 20},
-        )
-        new_commits = []
-        if commits_r.status_code == 200:
-            for c in commits_r.json():
-                if _parse_dt(c.get("committed_date", "")) > approval_dt:
-                    new_commits.append({
-                        "id":       c.get("id", ""),
-                        "short_id": c.get("short_id", ""),
-                        "title":    c.get("title", ""),
-                    })
-        new_threads, new_thread_previews = _compute_new_threads(discussions, approval_dt)
-        if not new_commits and new_threads == 0:
-            return None
-        return {"commits": new_commits, "new_threads": new_threads, "new_thread_previews": new_thread_previews}
-    except Exception as e:
-        print(f"[activities_after_approval] project={project_id} iid={iid} error: {e}")
+async def _activities_after_approval(gl: GL, project_id: int, iid: int, user_id: int, updated_at: str) -> dict | None:
+    key = gl.key("activities", project_id, iid, user_id, updated_at)
+    cached = _activities_cache.get(key)
+    if cached is not _MISS:
+        return cached
+
+    last_approval_at = await _find_approval_note(gl, project_id, iid, user_id, updated_at)
+    if last_approval_at is None:
         return None
+    approval_dt = _parse_dt(last_approval_at)
+    if approval_dt is None:
+        return None
+
+    commits_r, discussions = await asyncio.gather(
+        gl.try_get(f"/projects/{project_id}/merge_requests/{iid}/commits", {"per_page": 20}),
+        _fetch_discussions(gl, project_id, iid),
+    )
+    new_commits = []
+    if commits_r is not None:
+        for c in commits_r.json():
+            if _is_after(c.get("committed_date"), approval_dt):
+                new_commits.append({
+                    "id":       c.get("id", ""),
+                    "short_id": c.get("short_id", ""),
+                    "title":    c.get("title", ""),
+                })
+    new_threads, new_replies, previews = _compute_new_threads(discussions, approval_dt)
+    if not new_commits and not new_threads and not new_replies:
+        _activities_cache.set(key, None)
+        return None
+    result = {
+        "commits":             new_commits,
+        "new_threads":         new_threads,
+        "new_replies":         new_replies,
+        "new_thread_previews": previews,
+    }
+    _activities_cache.set(key, result)
+    return result
 
 
 async def _approvals(gl: GL, project_id: int, iid: int) -> list[dict]:
-    key = (gl.url, project_id, iid)
-    cached = _cache_get(_approvals_cache, key)
-    if cached is not None:
+    key = gl.key("approvals", project_id, iid)
+    cached = _approvals_cache.get(key)
+    if cached is not _MISS:
         return cached
-    try:
-        r = await _http.get(
-            f"{gl.url}/api/v4/projects/{project_id}/merge_requests/{iid}/approvals",
-            headers=gl.headers,
-        )
-        if r.status_code == 200:
-            result = [entry["user"] for entry in r.json().get("approved_by", [])]
-            _cache_set(_approvals_cache, key, result)
-            return result
-    except Exception:
-        pass
-    return []
+    r = await gl.try_get(f"/projects/{project_id}/merge_requests/{iid}/approvals")
+    if r is None:
+        return []
+    result = [entry["user"] for entry in r.json().get("approved_by", [])]
+    _approvals_cache.set(key, result)
+    return result
 
 
 async def _latest_pipeline(gl: GL, project_id: int, iid: int) -> dict | None:
-    key = (gl.url, project_id, iid)
-    cached = _cache_get(_pipeline_cache, key)
-    if cached is not None:
+    key = gl.key("pipeline", project_id, iid)
+    cached = _pipeline_cache.get(key)
+    if cached is not _MISS:
         return cached
-    try:
-        r = await _http.get(
-            f"{gl.url}/api/v4/projects/{project_id}/merge_requests/{iid}/pipelines",
-            headers=gl.headers,
-            params={"per_page": 50},
-        )
-        if r.status_code == 200:
-            pipelines = r.json()
-            result = None
-            for p in pipelines:
-                if p.get("source") != "merge_request_event":
-                    result = p
-                    break
-            if result is None and pipelines:
-                result = pipelines[0]
-            _cache_set(_pipeline_cache, key, result)
-            return result
-    except Exception as e:
-        print(f"[pipeline] project={project_id} iid={iid} error: {e}")
-    return None
+    r = await gl.try_get(f"/projects/{project_id}/merge_requests/{iid}/pipelines", {"per_page": 50})
+    if r is None:
+        return None
+    pipelines = r.json()
+    result = next((p for p in pipelines if p.get("source") != "merge_request_event"), None)
+    if result is None and pipelines:
+        result = pipelines[0]
+    _pipeline_cache.set(key, result)
+    return result
 
 
 async def _fetch_project_mrs(gl: GL, project_id: int, params: dict) -> list[dict]:
-    try:
-        r = await _http.get(
-            f"{gl.url}/api/v4/projects/{project_id}/merge_requests",
-            headers=gl.headers,
-            params=params,
-        )
-        if r.status_code == 200:
-            return r.json()
-    except Exception:
-        pass
-    return []
+    return await gl.get_all(f"/projects/{project_id}/merge_requests", params, _MAX_MR_PAGES)
 
 
-async def _fetch_targeted_mrs(gl: GL, params: dict) -> list[dict]:
-    current_user = await _get_current_user(gl)
-    user_id = current_user.get("id")
-    p = {**params, "per_page": 100}
-    batches = await asyncio.gather(
-        _fetch_global_mrs(gl, {**p, "scope": "created_by_me"}),
-        _fetch_global_mrs(gl, {**p, "scope": "assigned_to_me"}),
-        _fetch_global_mrs(gl, {**p, "scope": "all", "reviewer_id": user_id}) if user_id else asyncio.sleep(0),
-    )
+async def _fetch_global_mrs(gl: GL, params: dict) -> list[dict]:
+    return await gl.get_all("/merge_requests", params, _MAX_MR_PAGES)
+
+
+def _dedupe(batches: list[list[dict]]) -> list[dict]:
     seen: set = set()
-    result: list = []
+    result: list[dict] = []
     for batch in batches:
-        if not batch:
-            continue
         for mr in batch:
             if mr["id"] not in seen:
                 seen.add(mr["id"])
@@ -492,51 +738,44 @@ async def _fetch_targeted_mrs(gl: GL, params: dict) -> list[dict]:
     return result
 
 
-async def _fetch_global_mrs(gl: GL, params: dict) -> list[dict]:
-    try:
-        r = await _http.get(
-            f"{gl.url}/api/v4/merge_requests",
-            headers=gl.headers,
-            params=params,
-        )
-        if r.status_code == 200:
-            return r.json()
-    except Exception:
-        pass
-    return []
+async def _fetch_targeted_mrs(gl: GL, params: dict) -> list[dict]:
+    """scope=all times out on big instances, so ask three targeted questions."""
+    current_user = await _get_current_user(gl)
+    user_id = current_user.get("id")
+    p = {**params, "per_page": 100}
+    queries = [
+        _fetch_global_mrs(gl, {**p, "scope": "created_by_me"}),
+        _fetch_global_mrs(gl, {**p, "scope": "assigned_to_me"}),
+    ]
+    if user_id:
+        queries.append(_fetch_global_mrs(gl, {**p, "scope": "all", "reviewer_id": user_id}))
+    return _dedupe(await asyncio.gather(*queries))
 
 
-async def _enrich(gl: GL, mr_list: list[dict]) -> list[dict]:
+async def _enrich(gl: GL, mr_list: list[dict], with_details: bool = False) -> list[dict]:
+    """Attach approvers to every MR; `with_details` also attaches pipeline and
+    discussion stats for lists the client cannot patch in afterwards."""
     if not mr_list:
         return []
 
-    t0 = time.time()
+    t0 = time.monotonic()
     approved_by_list = await asyncio.gather(
         *[_approvals(gl, mr["project_id"], mr["iid"]) for mr in mr_list]
     )
-    print(f"[enrich] approvals for {len(mr_list)} MRs: {time.time()-t0:.2f}s", flush=True)
-
     for mr, approved_by in zip(mr_list, approved_by_list):
         mr["approved_by_users"] = approved_by
 
+    if with_details:
+        pipelines, discussions = await asyncio.gather(
+            asyncio.gather(*[_latest_pipeline(gl, mr["project_id"], mr["iid"]) for mr in mr_list]),
+            asyncio.gather(*[_fetch_discussions(gl, mr["project_id"], mr["iid"]) for mr in mr_list]),
+        )
+        for mr, pipeline, threads in zip(mr_list, pipelines, discussions):
+            mr["pipeline"] = pipeline
+            mr["discussion_stats"] = _compute_discussion_stats(threads)
+
+    log.debug("enriched %s MRs in %.2fs (details=%s)", len(mr_list), time.monotonic() - t0, with_details)
     return mr_list
-
-
-_GRAVATAR_ORIGINS = ("https://secure.gravatar.com", "https://www.gravatar.com")
-
-
-async def _fetch_gitlab_avatar(gl: GL, url: str) -> httpx.Response | None:
-    sep = "&" if "?" in url else "?"
-    attempts = [
-        (url, {"headers": {"Authorization": f"Bearer {gl.token}"}}),
-        (url, {"headers": gl.headers}),
-        (f"{url}{sep}private_token={gl.token}", {}),
-    ]
-    for fetch_url, kwargs in attempts:
-        r = await _http.get(fetch_url, **kwargs)
-        if r.status_code == 200:
-            return r
-    return None
 
 
 # ─── API endpoints ────────────────────────────────────────────────────────────
@@ -554,31 +793,54 @@ async def config():
     }
 
 
+_GRAVATAR_HOSTS = {"secure.gravatar.com", "www.gravatar.com"}
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _origin(url: str) -> tuple[str, str, int] | None:
+    """(scheme, host, port), or None if the URL is not one we would ever call."""
+    parts = urlsplit(url)
+    if parts.scheme not in _DEFAULT_PORTS or not parts.hostname:
+        return None
+    try:
+        port = parts.port
+    except ValueError:
+        return None  # malformed port, e.g. "gitlab.example.com:443.attacker.tld"
+    return (parts.scheme, parts.hostname.lower(), port or _DEFAULT_PORTS[parts.scheme])
+
+
 @app.get("/api/avatar")
-async def proxy_avatar(url: str = Query(...), gl: GL = Depends(get_gl)):
-    allowed = (gl.url,) + _GRAVATAR_ORIGINS
-    if not any(url.startswith(o) for o in allowed):
+async def proxy_avatar(url: str = Query(..., max_length=2048), gl: GL = Depends(get_gl)):
+    # Full-origin equality, not a string prefix: this request carries the user's
+    # token, and "gitlab.example.com.attacker.tld" starts with the GitLab URL
+    # while being a completely different server.
+    target = _origin(url)
+    if target is None:
         raise HTTPException(status_code=400, detail="URL not allowed")
-    if url.startswith(gl.url):
-        r = await _fetch_gitlab_avatar(gl, url)
-        if r is None:
-            raise HTTPException(status_code=404)
+
+    if target == _origin(gl.url):
+        r = await gl.fetch_url(url)
+    elif target[0] == "https" and target[1] in _GRAVATAR_HOSTS:
+        async with _gitlab_slots:
+            r = await _http.get(url)  # public host — never send credentials
     else:
-        r = await _http.get(url)
-        if r.status_code != 200:
-            raise HTTPException(status_code=404)
+        raise HTTPException(status_code=400, detail="URL not allowed")
+
+    if r.status_code != 200:
+        raise HTTPException(status_code=404, detail="Avatar not available")
     return Response(
         content=r.content,
         media_type=r.headers.get("content-type", "image/png"),
-        headers={"Cache-Control": "public, max-age=3600"},
+        headers={"Cache-Control": "private, max-age=3600"},
     )
 
 
 @app.get("/api/me")
 async def me(gl: GL = Depends(get_gl)):
     r = await gl.get("/user")
-    _user_cache[gl.token] = r.json()
-    return r.json()
+    user = r.json()
+    _user_cache.set(gl.key("user"), user)
+    return user
 
 
 @app.get("/api/mentions")
@@ -594,19 +856,20 @@ async def mentions(gl: GL = Depends(get_gl)):
         if mid and mid not in seen:
             seen.add(mid)
             mr_list.append(target)
-    return await _enrich(gl, mr_list)
+    # These MRs live outside the main list, so the client never patches pipeline
+    # and thread stats into them — they have to arrive complete.
+    return await _enrich(gl, mr_list, with_details=True)
 
 
 @app.get("/api/projects")
 async def projects(gl: GL = Depends(get_gl)):
-    r = await gl.get("/projects", {
+    return await gl.get_all("/projects", {
         "membership": True,
         "simple": True,
         "per_page": 100,
         "order_by": "last_activity_at",
         "sort": "desc",
-    })
-    return r.json()
+    }, _MAX_PROJECT_PAGES)
 
 
 @app.post("/api/merge-requests/activities")
@@ -629,12 +892,9 @@ async def mr_activities_batch(refs: list[MRRef], gl: GL = Depends(get_gl)):
     if not approved_refs:
         return {}
 
-    discussions_list = await asyncio.gather(
-        *[_fetch_discussions(gl, ref.project_id, ref.iid) for ref in approved_refs]
-    )
     activities_list = await asyncio.gather(
-        *[_activities_after_approval(gl, ref.project_id, ref.iid, me_id, discussions)
-          for ref, discussions in zip(approved_refs, discussions_list)]
+        *[_activities_after_approval(gl, ref.project_id, ref.iid, me_id, ref.updated_at)
+          for ref in approved_refs]
     )
     return {
         f"{ref.project_id}_{ref.iid}": result
@@ -676,25 +936,23 @@ async def mr_discussion_stats(project_id: int, iid: int, gl: GL = Depends(get_gl
     return _compute_discussion_stats(discussions)
 
 
+def _invalidate_approval(gl: GL, project_id: int, iid: int) -> None:
+    """Own approval just changed — drop the cached approver list so the refresh
+    that follows shows the new state instead of a minute-old one."""
+    _approvals_cache.delete(gl.key("approvals", project_id, iid))
+
+
 @app.post("/api/merge-requests/{project_id}/{iid}/approve")
 async def approve_mr(project_id: int, iid: int, gl: GL = Depends(get_gl)):
-    r = await _http.post(
-        f"{gl.url}/api/v4/projects/{project_id}/merge_requests/{iid}/approve",
-        headers=gl.headers,
-    )
-    if r.status_code not in (200, 201):
-        raise HTTPException(status_code=r.status_code, detail=r.text)
+    await gl.post(f"/projects/{project_id}/merge_requests/{iid}/approve", ok=(200, 201))
+    _invalidate_approval(gl, project_id, iid)
     return {"ok": True}
 
 
 @app.post("/api/merge-requests/{project_id}/{iid}/unapprove")
 async def unapprove_mr(project_id: int, iid: int, gl: GL = Depends(get_gl)):
-    r = await _http.post(
-        f"{gl.url}/api/v4/projects/{project_id}/merge_requests/{iid}/unapprove",
-        headers=gl.headers,
-    )
-    if r.status_code not in (200, 201, 204):
-        raise HTTPException(status_code=r.status_code, detail=r.text)
+    await gl.post(f"/projects/{project_id}/merge_requests/{iid}/unapprove", ok=(200, 201, 204))
+    _invalidate_approval(gl, project_id, iid)
     return {"ok": True}
 
 
@@ -725,20 +983,13 @@ async def todos_list(
 
 @app.post("/api/todos/mark_all_done")
 async def mark_all_todos_done(gl: GL = Depends(get_gl)):
-    r = await _http.post(f"{gl.url}/api/v4/todos/mark_as_done", headers=gl.headers)
-    if r.status_code not in (200, 201, 204):
-        raise HTTPException(status_code=r.status_code, detail=r.text)
+    await gl.post("/todos/mark_as_done")
     return {"ok": True}
 
 
 @app.post("/api/todos/{todo_id}/done")
 async def mark_todo_done(todo_id: int, gl: GL = Depends(get_gl)):
-    r = await _http.post(
-        f"{gl.url}/api/v4/todos/{todo_id}/mark_as_done",
-        headers=gl.headers,
-    )
-    if r.status_code not in (200, 201, 204):
-        raise HTTPException(status_code=r.status_code, detail=r.text)
+    await gl.post(f"/todos/{todo_id}/mark_as_done")
     return {"ok": True}
 
 
@@ -764,20 +1015,19 @@ async def merge_requests(
 
     ids = [int(x) for x in project_ids.split(",") if x.strip().isdigit()] if project_ids else []
 
+    def paginate(all_mrs: list[dict]) -> tuple[list[dict], int, int]:
+        total = len(all_mrs)
+        total_pages = max(1, -(-total // per_page))
+        start = (page - 1) * per_page
+        return all_mrs[start: start + per_page], total, total_pages
+
     if triage:
         if ids:
             # Projects selected → fetch all MRs per project directly (shows everything, not just "mine")
             batches = await asyncio.gather(
                 *[_fetch_project_mrs(gl, pid, {**base_params, "scope": "all", "per_page": 100}) for pid in ids]
             )
-            seen: set = set()
-            mr_list: list = []
-            for batch in batches:
-                for mr in batch:
-                    if mr["id"] not in seen:
-                        seen.add(mr["id"])
-                        mr_list.append(mr)
-            mr_list.sort(key=lambda m: m.get("updated_at", ""), reverse=True)
+            mr_list = _dedupe(list(batches))
         else:
             # No project filter → targeted queries to avoid scope=all timeout on large instances
             mr_list = await _fetch_targeted_mrs(gl, base_params)
@@ -786,30 +1036,20 @@ async def merge_requests(
     elif project_id:
         r = await gl.get(f"/projects/{project_id}/merge_requests", {**base_params, "scope": scope, "page": page, "per_page": per_page})
         mr_list    = r.json()
-        total      = int(r.headers.get("X-Total", 0))
-        total_pages = int(r.headers.get("X-Total-Pages", 1))
+        total      = int(r.headers.get("X-Total") or 0)
+        total_pages = int(r.headers.get("X-Total-Pages") or 1)
     elif ids:
         per_project_params = {**base_params, "scope": scope, "per_page": 100}
-        all_mrs: list = []
-        for batch in await asyncio.gather(*[_fetch_project_mrs(gl, pid, per_project_params) for pid in ids]):
-            all_mrs.extend(batch)
-        all_mrs.sort(key=lambda m: m.get("updated_at", ""), reverse=True)
-        total       = len(all_mrs)
-        total_pages = max(1, -(-total // per_page))
-        start       = (page - 1) * per_page
-        mr_list     = all_mrs[start: start + per_page]
+        batches = await asyncio.gather(*[_fetch_project_mrs(gl, pid, per_project_params) for pid in ids])
+        mr_list, total, total_pages = paginate(_dedupe(list(batches)))
     elif scope == "all":
         # scope=all on large instances (e.g. gitlab.com) times out — use targeted queries
-        all_mrs     = await _fetch_targeted_mrs(gl, base_params)
-        total       = len(all_mrs)
-        total_pages = max(1, -(-total // per_page))
-        start       = (page - 1) * per_page
-        mr_list     = all_mrs[start: start + per_page]
+        mr_list, total, total_pages = paginate(await _fetch_targeted_mrs(gl, base_params))
     else:
         r = await gl.get("/merge_requests", {**base_params, "scope": scope, "page": page, "per_page": per_page})
         mr_list    = r.json()
-        total      = int(r.headers.get("X-Total", 0))
-        total_pages = int(r.headers.get("X-Total-Pages", 1))
+        total      = int(r.headers.get("X-Total") or 0)
+        total_pages = int(r.headers.get("X-Total-Pages") or 1)
 
     return {
         "items":       await _enrich(gl, mr_list),

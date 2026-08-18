@@ -199,7 +199,7 @@ function GroupHeader({ label, count, hint }) {
 
 /* ─────────────────────────── main component ─────────────────────────── */
 
-export default function TodoView() {
+export default function TodoView({ onUnauthorized }) {
   const [todos, setTodos]      = useState([]);
   const [loading, setLoading]  = useState(false);
   const [error, setError]      = useState(null);
@@ -216,8 +216,7 @@ export default function TodoView() {
       const params = new URLSearchParams({ state, per_page: 100 });
       const r = await fetch(`/api/todos?${params}`);
       if (r.status === 401) {
-        await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
-        window.location.reload();
+        onUnauthorized?.();
         return;
       }
       if (!r.ok) throw new Error(`Error ${r.status}: ${await r.text()}`);
@@ -227,7 +226,7 @@ export default function TodoView() {
     } finally {
       setLoading(false);
     }
-  }, [state]);
+  }, [state, onUnauthorized]);
 
   useEffect(() => { load(); }, [load]);
 

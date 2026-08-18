@@ -8,12 +8,25 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import BucketSection from "../components/BucketSection";
 import RefreshButton from "../components/RefreshButton";
 
+/** POST that fails loudly, carrying GitLab's reason instead of a bare status. */
+async function post(url) {
+  const r = await fetch(url, { method: "POST" });
+  if (!r.ok) {
+    const detail = await r.json().then((d) => d?.detail).catch(() => null);
+    throw new Error(detail || `HTTP ${r.status}`);
+  }
+  return r;
+}
+
+const mrRef = (mr) => mr.references?.full ?? `!${mr.iid}`;
+
 export default function Triage({ data, loading, error, currentUser, view, refresh, mentionedMRs, autoRefreshSecs, onAutoRefreshChange, searchQuery = "" }) {
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [approving, setApproving]     = useState(false);
   const [reapproving, setReapproving] = useState(false);
   const [unapproving, setUnapproving] = useState(false);
   const [doneMsg, setDoneMsg]         = useState(null);
+  const [actionError, setActionError] = useState(null);
   const [sortBy, setSortBy]           = useState("newest");
 
   useEffect(() => { setSelectedIds(new Set()); }, [view.bucket]);
@@ -56,20 +69,36 @@ export default function Triage({ data, loading, error, currentUser, view, refres
     setSelectedIds(allSelected ? new Set() : new Set(allVisible.map((mr) => mr.id)));
   };
 
+  /** Runs a bulk action and reports what actually happened per MR. Anything that
+   *  failed stays selected, so a retry is one click away. */
+  const runBulk = async ({ done, verb }, mrs, action) => {
+    setActionError(null);
+    const results = await Promise.allSettled(mrs.map(action));
+    const failures = results
+      .map((r, i) => (r.status === "rejected" ? { mr: mrs[i], reason: r.reason?.message ?? "unknown error" } : null))
+      .filter(Boolean);
+
+    setSelectedIds(new Set(failures.map((f) => f.mr.id)));
+
+    if (failures.length === 0) {
+      setDoneMsg(`✓ ${done} ${mrs.length} MR${mrs.length > 1 ? "s" : ""}`);
+      setTimeout(() => setDoneMsg(null), 2500);
+    } else {
+      const shown = failures.slice(0, 2).map((f) => `${mrRef(f.mr)} — ${f.reason}`).join("; ");
+      const more  = failures.length > 2 ? ` (+${failures.length - 2} more)` : "";
+      setActionError(`Could not ${verb} ${failures.length} of ${mrs.length}: ${shown}${more}`);
+    }
+    refresh();
+  };
+
   const handleApprove = async () => {
     if (selectedIds.size === 0 || approving) return;
-    setApproving(true);
     const mrs = allVisible.filter((mr) => selectedIds.has(mr.id));
-    await Promise.allSettled(
-      mrs.map((mr) =>
-        fetch(`/api/merge-requests/${mr.project_id}/${mr.iid}/approve`, { method: "POST" })
-      )
+    setApproving(true);
+    await runBulk({ done: "Approved", verb: "approve" }, mrs, (mr) =>
+      post(`/api/merge-requests/${mr.project_id}/${mr.iid}/approve`)
     );
-    setSelectedIds(new Set());
     setApproving(false);
-    setDoneMsg(`✓ Approved ${mrs.length} MR${mrs.length > 1 ? "s" : ""}`);
-    setTimeout(() => setDoneMsg(null), 2500);
-    refresh();
   };
 
   const handleReapprove = async () => {
@@ -77,15 +106,16 @@ export default function Triage({ data, loading, error, currentUser, view, refres
     const mrs = allVisible.filter((mr) => selectedIds.has(mr.id) && mr.activities_after_approval);
     if (!mrs.length) return;
     setReapproving(true);
-    await Promise.allSettled(
-      mrs.map(async (mr) => {
-        await fetch(`/api/merge-requests/${mr.project_id}/${mr.iid}/unapprove`, { method: "POST" });
-        await fetch(`/api/merge-requests/${mr.project_id}/${mr.iid}/approve`,   { method: "POST" });
-      })
-    );
-    setSelectedIds(new Set());
+    await runBulk({ done: "Re-approved", verb: "re-approve" }, mrs, async (mr) => {
+      await post(`/api/merge-requests/${mr.project_id}/${mr.iid}/unapprove`);
+      try {
+        await post(`/api/merge-requests/${mr.project_id}/${mr.iid}/approve`);
+      } catch (e) {
+        // Never let this fail quietly: the approval is already gone at this point.
+        throw new Error(`approval withdrawn but could not be re-applied (${e.message}) — approve it manually`);
+      }
+    });
     setReapproving(false);
-    refresh();
   };
 
   const canReapprove = !reapproving && allVisible.some(
@@ -99,14 +129,10 @@ export default function Triage({ data, loading, error, currentUser, view, refres
     );
     if (!mrs.length) return;
     setUnapproving(true);
-    await Promise.allSettled(
-      mrs.map((mr) =>
-        fetch(`/api/merge-requests/${mr.project_id}/${mr.iid}/unapprove`, { method: "POST" })
-      )
+    await runBulk({ done: "Unapproved", verb: "unapprove" }, mrs, (mr) =>
+      post(`/api/merge-requests/${mr.project_id}/${mr.iid}/unapprove`)
     );
-    setSelectedIds(new Set());
     setUnapproving(false);
-    refresh();
   };
 
   const canUnapprove = !unapproving && allVisible.some(
@@ -238,10 +264,25 @@ export default function Triage({ data, loading, error, currentUser, view, refres
         </div>
       )}
 
-      {/* 2-column grid on 2xl screens */}
-      <div className="2xl:grid 2xl:grid-cols-2 2xl:gap-x-px 2xl:bg-gray-200">
+      {actionError && (
+        <div className="mx-5 mt-4 p-3 bg-red-50 border border-red-200 rounded-md text-sm text-red-700 flex items-start gap-3">
+          <span className="flex-1">{actionError}</span>
+          <button onClick={() => setActionError(null)} className="shrink-0 text-red-400 hover:text-red-700" title="Dismiss">
+            <svg viewBox="0 0 16 16" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round"/>
+            </svg>
+          </button>
+        </div>
+      )}
+
+      {/* Two columns on 2xl. Deliberately CSS multi-column rather than a 2-col
+          grid: a grid ties both cells of a row to the taller one, which is what
+          left the big blank gaps under the shorter bucket. The divider is a
+          column-rule, not a background showing through the gap — a background
+          would paint the tail of the shorter column grey. */}
+      <div className="bg-white 2xl:columns-2 2xl:gap-px 2xl:[column-rule:1px_solid_#e5e7eb]">
         {order.map((id) => (
-          <div key={id} className="bg-white">
+          <div key={id} className="break-inside-avoid">
             <BucketSection bucket={BUCKETS[id]} mrs={classified[id]} hint={hints[id]}
                            currentUserId={currentUser?.id} selectedIds={selectedIds} onToggle={toggleOne}
                            dataLoaded={data !== null} searchActive={searchQuery.trim().length > 0} />

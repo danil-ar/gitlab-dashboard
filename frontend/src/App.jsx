@@ -60,8 +60,9 @@ export default function Root() {
 // ─── main app ────────────────────────────────────────────────────────────────
 
 function App({ activeProfile, profiles, onRefresh }) {
+  const profileId = activeProfile.id;
   const [view, setView]                             = useState({ kind: "triage", bucket: "needs" });
-  const [filters, setFilters]                       = useState(loadFilters);
+  const [filters, setFilters]                       = useState(() => loadFilters(profileId));
   const [needsMyApproval, setNeedsMyApproval]       = useState(false);
   const [page, setPage]                             = useState(1);
   const [data, setData]                             = useState(null);
@@ -73,7 +74,7 @@ function App({ activeProfile, profiles, onRefresh }) {
   const [showSettings, setShowSettings]             = useState(false);
   const [todoCount, setTodoCount]                   = useState(0);
   const [triageItems, setTriageItems]               = useState([]);
-  const [selectedProjectIds, setSelectedProjectIds] = useState(loadSelectedProjects);
+  const [selectedProjectIds, setSelectedProjectIds] = useState(() => loadSelectedProjects(profileId));
   const [autoRefreshSecs, setAutoRefreshSecs]       = useState(0);
   const [searchInput, setSearchInput]               = useState(filters.search);
   const loadIdRef = useRef(0);
@@ -85,6 +86,9 @@ function App({ activeProfile, profiles, onRefresh }) {
     prevViewKindRef.current = view.kind;
     setData(null);
     setSearchInput("");
+    // the committed query has to go too, otherwise the emptied box still
+    // filters the list you come back to
+    setFilters((prev) => (prev.search ? { ...prev, search: "" } : prev));
   }, [view.kind]);
 
   // debounce browse search
@@ -108,12 +112,12 @@ function App({ activeProfile, profiles, onRefresh }) {
       .then((d) => {
         if (!d) return;
         setProjects(d);
-        if (loadSelectedProjects().size === 0) {
+        if (loadSelectedProjects(profileId).size === 0) {
           fetch("/api/config").then((r) => r.json()).then((cfg) => {
             if (!cfg.default_group) return;
             const ns = cfg.default_group.toLowerCase();
             const ids = new Set(d.filter((p) => p.path_with_namespace.toLowerCase().startsWith(ns + "/")).map((p) => p.id));
-            if (ids.size > 0) { saveSelectedProjects(ids); setSelectedProjectIds(ids); }
+            if (ids.size > 0) { saveSelectedProjects(profileId, ids); setSelectedProjectIds(ids); }
           }).catch(() => {});
         }
       })
@@ -125,7 +129,7 @@ function App({ activeProfile, profiles, onRefresh }) {
     return () => clearInterval(id);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => { saveFilters(filters); }, [filters]);
+  useEffect(() => { saveFilters(profileId, filters); }, [profileId, filters]);
 
   const load = useCallback(async (f, p, isTriage, projectIds) => {
     const myLoadId = ++loadIdRef.current;
@@ -151,7 +155,13 @@ function App({ activeProfile, profiles, onRefresh }) {
       setData(json);
       if (isTriage) setTriageItems(json.items ?? []);
 
-      const refs = (json.items ?? []).map((mr) => ({ project_id: mr.project_id, iid: mr.iid }));
+      // updated_at lets the server cache the expensive post-approval lookups
+      // until the MR actually changes, instead of re-scanning on every refresh
+      const refs = (json.items ?? []).map((mr) => ({
+        project_id: mr.project_id,
+        iid:        mr.iid,
+        updated_at: mr.updated_at ?? "",
+      }));
       if (refs.length > 0) {
         const body = JSON.stringify(refs);
         const headers = { "Content-Type": "application/json" };
@@ -230,7 +240,7 @@ function App({ activeProfile, profiles, onRefresh }) {
 
   const handleSettingsClose = () => {
     setShowSettings(false);
-    setSelectedProjectIds(loadSelectedProjects());
+    setSelectedProjectIds(loadSelectedProjects(profileId));
   };
 
   const handleProjectClick = (projectId) => {
@@ -268,11 +278,16 @@ function App({ activeProfile, profiles, onRefresh }) {
     return c;
   }, [triageItems]);
 
-  const totalOpen = triageItems.filter((m) => m.state === "opened").length;
+  // "All open" navigates to Browse, which applies scope and the single-project
+  // filter — the triage tally only describes that list when neither is narrowing
+  // it, so drop the number rather than show one that disagrees with the page.
+  const totalOpen = filters.scope === "all" && !filters.project_id
+    ? triageItems.filter((m) => m.state === "opened").length
+    : null;
 
   return (
     <div className="flex h-screen bg-gray-50 overflow-hidden">
-      {showSettings && <ProjectSettings projects={projects} onClose={handleSettingsClose} />}
+      {showSettings && <ProjectSettings projects={projects} profileId={profileId} onClose={handleSettingsClose} />}
 
       <Sidebar
         counts={counts}
@@ -354,7 +369,7 @@ function App({ activeProfile, profiles, onRefresh }) {
         </header>
 
         {view.kind === "todo" ? (
-          <TodoView />
+          <TodoView onUnauthorized={signOut} />
         ) : view.kind === "triage" ? (
           <Triage
             data={data} loading={loading} error={error}
