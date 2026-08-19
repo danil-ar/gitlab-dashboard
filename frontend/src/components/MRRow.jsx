@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { timeAgo } from "../utils/timeAgo";
 import { MERGE_STATUS, STALE_DAYS } from "../constants";
-import { copyText, reviewMessage } from "../utils/reviewMessage";
+import { copyText, issueUrl, reviewMessage } from "../utils/reviewMessage";
 
 /** Changed lines, as a reviewer reads them: how big a bite is this. */
 function DiffSize({ stats }) {
@@ -181,7 +181,15 @@ export default function MRRow({ mr, currentUserId, bucket, selected, onToggle })
           <span className="shrink-0">by <span className="text-gray-700">{mr.author?.name}</span></span>
           <span className="text-gray-300 shrink-0">·</span>
           <span className="flex items-center gap-1 shrink-0">
-            <code className="bg-gray-100 px-1 rounded text-[10px] max-w-[100px] truncate">{mr.source_branch}</code>
+            {issueUrl(mr) ? (
+              <a href={issueUrl(mr)} target="_blank" rel="noopener noreferrer"
+                 title="Open the issue in the tracker"
+                 className="bg-gray-100 hover:bg-blue-50 hover:text-blue-700 px-1 rounded text-[10px] max-w-[100px] truncate font-mono transition-colors">
+                {mr.source_branch}
+              </a>
+            ) : (
+              <code className="bg-gray-100 px-1 rounded text-[10px] max-w-[100px] truncate">{mr.source_branch}</code>
+            )}
             <span className="text-gray-400">→</span>
             <code className="bg-gray-100 px-1 rounded text-[10px]">{mr.target_branch}</code>
           </span>

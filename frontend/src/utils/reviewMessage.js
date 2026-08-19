@@ -27,6 +27,17 @@ export function issueKey(mr) {
   return found ? found[0] : null;
 }
 
+/** Where the tracker shows this branch's issue, when both are knowable.
+ *
+ *  Read at render time, and `jiraUrl` arrives asynchronously — which is safe
+ *  only because /api/config is a local call made at module load while any row
+ *  is waiting on a round trip to GitLab first.
+ */
+export function issueUrl(mr) {
+  const key = issueKey(mr);
+  return key && jiraUrl ? `${jiraUrl}/browse/${key}` : null;
+}
+
 export function reviewMessage(mr) {
   const key = issueKey(mr);
   // "LKAG-3210: Require deal…" — the key is about to be its own line above
