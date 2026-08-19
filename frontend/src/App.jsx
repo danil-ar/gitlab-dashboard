@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import UnreviewedView, { fetchUnreviewedCount } from "./UnreviewedView";
 import TodoView, { fetchTodoCount } from "./TodoView";
 import Sidebar from "./components/Sidebar";
 import LoginScreen from "./components/LoginScreen";
@@ -73,18 +74,30 @@ function App({ activeProfile, profiles, onRefresh }) {
   const [mentionedMRs, setMentionedMRs]             = useState([]);
   const [showSettings, setShowSettings]             = useState(false);
   const [todoCount, setTodoCount]                   = useState(0);
+  const [unreviewedCount, setUnreviewedCount]       = useState(0);
   const [triageItems, setTriageItems]               = useState([]);
   const [selectedProjectIds, setSelectedProjectIds] = useState(() => loadSelectedProjects(profileId));
   const [autoRefreshSecs, setAutoRefreshSecs]       = useState(0);
   const [searchInput, setSearchInput]               = useState(filters.search);
   const loadIdRef = useRef(0);
 
+  // `lastQueryRef` describes what `data` currently holds, which is how the
+  // loader knows that a re-render asking for the same query needs no fetch. The
+  // two must therefore be emptied together: clearing the list while still
+  // claiming its query is loaded is what left the triage groups reading zero
+  // after a trip to another view.
+  const lastQueryRef = useRef("");
+  const clearData = useCallback(() => {
+    setData(null);
+    lastQueryRef.current = "";
+  }, []);
+
   // clear stale data and search when switching view kinds
   const prevViewKindRef = useRef(view.kind);
   useEffect(() => {
     if (prevViewKindRef.current === view.kind) return;
     prevViewKindRef.current = view.kind;
-    setData(null);
+    clearData();
     setSearchInput("");
     // the committed query has to go too, otherwise the emptied box still
     // filters the list you come back to
@@ -129,6 +142,9 @@ function App({ activeProfile, profiles, onRefresh }) {
     fetch("/api/me").then((r) => { if (r.status === 401) { signOut(); return null; } return r.json(); }).then((d) => d && setCurrentUser(d)).catch(console.error);
     fetch("/api/mentions").then((r) => { if (r.status === 401) return null; return r.json(); }).then((d) => d && setMentionedMRs(d)).catch(console.error);
     fetchTodoCount().then(setTodoCount);
+    // same project filter the view will use, or the badge would count branches
+    // the list then refuses to show
+    fetchUnreviewedCount([...loadSelectedProjects(profileId)]).then(setUnreviewedCount).catch(() => {});
     const id = setInterval(() => fetchTodoCount().then(setTodoCount), 60_000);
     return () => clearInterval(id);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -226,9 +242,8 @@ function App({ activeProfile, profiles, onRefresh }) {
   // What the loader watches are objects, and React compares those by identity —
   // so a re-render that rebuilds `filters` with identical contents used to cost
   // a second full fetch of the same page. Compare the query instead.
-  const lastQueryRef = useRef("");
   useEffect(() => {
-    if (view.kind === "todo") return;
+    if (view.kind === "todo" || view.kind === "branches") return;
     const query = JSON.stringify([view.kind, page, filters, [...selectedProjectIds].sort()]);
     if (query === lastQueryRef.current) return;
     lastQueryRef.current = query;
@@ -236,7 +251,7 @@ function App({ activeProfile, profiles, onRefresh }) {
   }, [load, filters, page, view.kind, selectedProjectIds]);
 
   useEffect(() => {
-    if (autoRefreshSecs === 0 || view.kind === "todo") return;
+    if (autoRefreshSecs === 0 || view.kind === "todo" || view.kind === "branches") return;
     const isTriage = view.kind === "triage";
     const id = setInterval(() => {
       load(filters, page, isTriage, selectedProjectIds);
@@ -248,7 +263,7 @@ function App({ activeProfile, profiles, onRefresh }) {
   }, [autoRefreshSecs, view.kind, load, filters, page, selectedProjectIds]);
 
   const setFilter = (key) => (e) => {
-    setData(null);
+    clearData();
     setPage(1);
     setFilters((prev) => ({ ...prev, [key]: e.target.value }));
   };
@@ -260,7 +275,7 @@ function App({ activeProfile, profiles, onRefresh }) {
     const unchanged = view.kind === "browse"
       && Object.entries(patch).every(([key, value]) => filters[key] === value);
     if (!unchanged) {
-      setData(null);
+      clearData();
       setFilters((prev) => ({ ...prev, ...patch }));
     }
     setView({ kind: "browse" });
@@ -329,6 +344,7 @@ function App({ activeProfile, profiles, onRefresh }) {
         currentUser={currentUser}
         projectCounts={projectCounts}
         todosCount={todoCount}
+        unreviewedCount={unreviewedCount}
         activeProfile={activeProfile}
         profiles={profiles}
         onRefresh={onRefresh}
@@ -397,6 +413,8 @@ function App({ activeProfile, profiles, onRefresh }) {
 
         {view.kind === "todo" ? (
           <TodoView onUnauthorized={signOut} />
+        ) : view.kind === "branches" ? (
+          <UnreviewedView selectedProjectIds={selectedProjectIds} onCount={setUnreviewedCount} />
         ) : view.kind === "triage" ? (
           <Triage
             data={data} loading={loading} error={error}

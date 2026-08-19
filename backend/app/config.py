@@ -42,6 +42,9 @@ def env_int(name: str, default: int) -> int:
 
 DEFAULT_URL   = os.environ.get("GITLAB_URL", "").rstrip("/")
 DEFAULT_GROUP = os.environ.get("GITLAB_DEFAULT_GROUP", "").strip()
+# Where an issue key from a branch name resolves to. Only used to build the
+# review announcement people paste into chat; empty just leaves the bare key.
+JIRA_URL      = os.environ.get("JIRA_URL", "").rstrip("/")
 SECRET_KEY    = os.environ.get("SECRET_KEY", "")
 SECURE_COOKIE = env_flag("SECURE_COOKIE")
 CORS_ORIGINS  = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
@@ -61,6 +64,11 @@ GRAPHQL_RETRY_AFTER   = env_int("GRAPHQL_RETRY_AFTER", 600)   # cool-off after a
 CACHE_TTL         = env_int("CACHE_TTL", 60)          # short-lived GitLab reads
 APPROVAL_TTL      = env_int("APPROVAL_TTL", 900)      # keyed by mr.updated_at, safe to keep longer
 CACHE_MAXSIZE     = env_int("CACHE_MAXSIZE", 4096)
+# Scanning every branch of every project is the dashboard's most expensive read,
+# and what it finds changes when somebody pushes, not second to second. The
+# Refresh button bypasses this, so a long life costs nothing but staleness you
+# did not ask about.
+UNREVIEWED_TTL    = env_int("UNREVIEWED_TTL", 600)
 CONCURRENCY       = env_int("GITLAB_CONCURRENCY", 10)
 MAX_PROJECT_PAGES = env_int("MAX_PROJECT_PAGES", 10)  # /projects, 100 per page
 MAX_MR_PAGES      = env_int("MAX_MR_PAGES", 5)        # per merge-request query

@@ -6,7 +6,7 @@ import AboutModal from "./AboutModal";
 
 export default function Sidebar({
   counts, totalOpen, view, setView, navigateBrowse, filters, projects,
-  selectedProjectIds, openProjectSettings, currentUser, projectCounts, todosCount,
+  selectedProjectIds, openProjectSettings, currentUser, projectCounts, todosCount, unreviewedCount,
   activeProfile, profiles, onRefresh, onProjectClick,
 }) {
   const [showProfileMenu, setShowProfileMenu] = useState(false);
@@ -106,6 +106,25 @@ export default function Sidebar({
         {triageItem("approved", "You approved",        counts.approved, "text-green-600")}
         {triageItem("mine",     "Your open MRs",       counts.mine,     "text-blue-600")}
         {triageItem("mention",  "Mentioned you",       counts.mention,  "text-purple-500")}
+        <button
+          onClick={() => setView({ kind: "branches" })}
+          title="Branches you pushed that no merge request was opened for"
+          className={`group w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors ${
+            view.kind === "branches"
+              ? "bg-white shadow-sm text-gray-900 font-semibold"
+              : "text-gray-600 hover:bg-gray-200/60 hover:text-gray-900"
+          }`}
+        >
+          <svg viewBox="0 0 16 16" className="w-3.5 h-3.5 shrink-0 text-gray-400" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <path d="M4.5 3v10M11.5 5v2c0 3-7 1-7 4M4.5 3a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Zm0 10a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3Zm7-10a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3Z" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+          <span className="flex-1 text-left truncate">No merge request</span>
+          {unreviewedCount > 0 && (
+            <span className="text-[11px] font-semibold tabular-nums px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 shrink-0">
+              {unreviewedCount}
+            </span>
+          )}
+        </button>
         <button
           onClick={() => setView({ kind: "todo" })}
           className={`group w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors ${

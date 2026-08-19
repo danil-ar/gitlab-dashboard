@@ -2,7 +2,7 @@
 import time
 from collections import OrderedDict
 
-from .config import APPROVAL_TTL, CACHE_MAXSIZE, CACHE_TTL, GRAPHQL_RETRY_AFTER
+from .config import APPROVAL_TTL, CACHE_MAXSIZE, CACHE_TTL, GRAPHQL_RETRY_AFTER, UNREVIEWED_TTL
 
 MISS = object()
 
@@ -57,5 +57,7 @@ users        = TTLCache(CACHE_TTL * 5, maxsize=256)
 approvals    = TTLCache(CACHE_TTL)
 discussions  = TTLCache(CACHE_TTL)
 pipelines    = TTLCache(CACHE_TTL)
+# The sidebar badge and the view itself ask the same question moments apart.
+unreviewed   = TTLCache(UNREVIEWED_TTL)
 approval_at  = TTLCache(APPROVAL_TTL)
 activities   = TTLCache(APPROVAL_TTL)

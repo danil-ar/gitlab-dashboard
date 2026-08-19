@@ -96,6 +96,10 @@ export function ThreadPreview({ p, url, dim = false }) {
 function TooltipContent({ stats, mrUrl }) {
   const unresolved = stats.unresolved_previews ?? [];
   const resolved   = stats.resolved_previews   ?? [];
+  // Resolved threads are the archive: worth reaching for, not worth scrolling
+  // past to reach the two that still want an answer. Unless they are all there
+  // is, in which case hiding them would leave an empty popover.
+  const [showResolved, setShowResolved] = useState(unresolved.length === 0);
 
   return (
     <>
@@ -112,13 +116,19 @@ function TooltipContent({ stats, mrUrl }) {
       )}
       {resolved.length > 0 && (
         <div className={`p-2.5 ${unresolved.length > 0 ? "border-t border-gray-100" : ""}`}>
-          <div className="flex items-center gap-1.5 px-0.5 pb-2 text-[10px] font-semibold uppercase tracking-wider text-green-600">
+          <button
+            onClick={() => setShowResolved((v) => !v)}
+            className="w-full flex items-center gap-1.5 px-0.5 pb-2 text-[10px] font-semibold uppercase tracking-wider text-green-600 hover:text-green-700 transition-colors"
+          >
             <span className="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" />
             Resolved · {resolved.length}
-          </div>
-          <div className="space-y-1.5">
-            {resolved.map((p, i) => <ThreadPreview key={i} p={p} url={mrUrl} dim />)}
-          </div>
+            <span className="text-[9px] ml-auto">{showResolved ? "▲" : "▼"}</span>
+          </button>
+          {showResolved && (
+            <div className="space-y-1.5">
+              {resolved.map((p, i) => <ThreadPreview key={i} p={p} url={mrUrl} dim />)}
+            </div>
+          )}
         </div>
       )}
     </>

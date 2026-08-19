@@ -34,7 +34,7 @@ fragment MRFields on MergeRequest {
   assignees { nodes { id name username avatarUrl } }
   reviewers { nodes { id name username avatarUrl } }
   approvedBy { nodes { id name username avatarUrl } }
-  labels { nodes { title } }
+  labels { nodes { title color textColor } }
   pipelines(first: $pipelines) { nodes { id status source path createdAt } }
   diffStatsSummary { additions deletions fileCount }
   resolvableDiscussionsCount
@@ -159,7 +159,13 @@ def map_merge_request(node: dict, project_id: int | None, base: str) -> dict:
         "author":        map_user(node.get("author"), base),
         "assignees":     _map_users(node.get("assignees"), base),
         "reviewers":     _map_users(node.get("reviewers"), base),
-        "labels":        [l["title"] for l in ((node.get("labels") or {}).get("nodes") or [])],
+        # Colours come from GitLab, where the team already decided what
+        # `security-concern` should look like — the dashboard inventing its own
+        # emphasis rules on top of that would only compete with them.
+        "labels": [
+            {"title": l.get("title") or "", "color": l.get("color"), "text_color": l.get("textColor")}
+            for l in ((node.get("labels") or {}).get("nodes") or [])
+        ],
         # Already resolved here, so the client never has to ask for them again.
         "approved_by_users": _map_users(node.get("approvedBy"), base),
         "pipeline": {

@@ -1,6 +1,8 @@
 """Domain reads: everything the routes need from GitLab, cached and enriched."""
 import asyncio
 import time
+from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 
 from . import cache, discussions as disc, graphql
 from .cache import MISS
@@ -143,10 +145,19 @@ async def activities_after_approval(gl: GL, project_id: int, iid: int, user_id: 
     if commits_r is not None:
         for c in commits_r.json():
             if disc.is_after(c.get("committed_date"), approval_dt):
+                message = (c.get("message") or "").strip()
                 new_commits.append({
                     "id":       c.get("id", ""),
                     "short_id": c.get("short_id", ""),
                     "title":    c.get("title", ""),
+                    # A thread preview answers who, when and what; a commit that
+                    # landed on an approved MR deserves the same three, and the
+                    # date is already in hand — it is what the filter above reads.
+                    "author":   c.get("author_name") or "",
+                    "created_at": c.get("committed_date"),
+                    "web_url":  c.get("web_url"),
+                    # Everything past the subject line, where people explain why.
+                    "body":     message.split("\n", 1)[1].strip() if "\n" in message else "",
                 })
     new_threads, new_replies, previews = disc.compute_new_threads(threads, approval_dt)
     if not new_commits and not new_threads and not new_replies:
@@ -290,3 +301,186 @@ async def enrich(gl: GL, mr_list: list[dict], with_details: bool = False) -> lis
 
     log.debug("enriched %s MRs in %.2fs (details=%s)", len(mr_list), time.monotonic() - t0, with_details)
     return mr_list
+
+
+# ─── work that never went through review ──────────────────────────────────────
+
+def _recent(iso: str | None, days: int) -> bool:
+    dt = disc.parse_dt(iso)
+    return dt is not None and (datetime.now(timezone.utc) - dt).days < days
+
+
+
+def wants_merge_request(branch: dict, days: int) -> bool:
+    """Whether this branch is work that still needs review.
+
+    The trunk is not: nobody opens a merge request *from* the branch everything
+    merges into, and what lands there unreviewed is the other half of this
+    question. Neither is a branch already merged, nor one nothing has touched in
+    weeks — that is somebody's abandoned experiment, not a review queue.
+    """
+    return (
+        not branch.get("default")
+        and not branch.get("protected")
+        and not branch.get("merged")
+        and _recent((branch.get("commit") or {}).get("committed_date"), days)
+    )
+
+
+def arrived_without_a_merge(commit: dict) -> bool:
+    """Whether this trunk commit could have reached the branch without a merge.
+
+    Read along `first_parent`, a commit with two parents is the merge itself, so
+    a merge request did its job. One parent means the change was written onto
+    the branch — either pushed straight there, or squashed by a merge request,
+    and the shape of the commit cannot tell those apart. So this is a suspicion,
+    not a verdict; GitLab settles it.
+    """
+    parents = commit.get("parent_ids") or []
+    # A root commit has no parent to merge from: it is where the repository
+    # began, and nobody was ever going to review it.
+    return len(parents) == 1
+
+
+async def project_branches(gl: GL, project_ids: list[int]) -> dict[int, list[dict]]:
+    """Every branch of every selected project, one call each.
+
+    This one listing answers all of it: which branch is the trunk, which are
+    protected, which are already merged, and when each was last touched — so
+    nothing below has to ask again.
+    """
+    listings = await asyncio.gather(*[
+        gl.get_all(f"/projects/{pid}/repository/branches", {"per_page": 100}, 2)
+        for pid in project_ids
+    ])
+    return dict(zip(project_ids, listings))
+
+
+async def branches_without_mr(gl: GL, projects: dict[int, dict],
+                              branches: dict[int, list[dict]], days: int) -> list[dict]:
+    """Branches nobody opened a merge request for — work in progress that no
+    reviewer can see yet.
+
+    The trunk is excluded on purpose: nobody opens a merge request *from* the
+    branch everything merges into. What lands there without review is a
+    different question, answered by commits_without_mr.
+    """
+    candidates = [
+        (pid, b) for pid, listing in branches.items() for b in listing
+        if wants_merge_request(b, days)
+    ]
+
+    existing = await asyncio.gather(*[
+        gl.try_get(f"/projects/{pid}/merge_requests",
+                   {"source_branch": b["name"], "state": "all", "per_page": 1})
+        for pid, b in candidates
+    ])
+
+    out = []
+    for (pid, b), r in zip(candidates, existing):
+        if r is not None and r.json():
+            continue
+        project, commit = projects.get(pid) or {}, b.get("commit") or {}
+        web = project.get("web_url")
+        out.append({
+            "project_id":   pid,
+            "project_path": project.get("path_with_namespace") or "",
+            "project_url":  web,
+            "branch":       b["name"],
+            "branch_url":   f"{web}/-/tree/{quote(b['name'], safe='')}" if web else None,
+            "commit_title": commit.get("title") or "",
+            "author":       commit.get("author_name") or "",
+            "pushed_at":    commit.get("committed_date"),
+            "create_mr_url": (
+                f"{project['web_url']}/-/merge_requests/new"
+                f"?merge_request%5Bsource_branch%5D={quote(b['name'], safe='')}"
+                if project.get("web_url") else None
+            ),
+        })
+    out.sort(key=lambda b: b.get("pushed_at") or "", reverse=True)
+    return out
+
+
+async def commits_without_mr(gl: GL, projects: dict[int, dict],
+                             branches: dict[int, list[dict]], days: int) -> list[dict]:
+    """Commits that reached a protected or default branch without a merge request.
+
+    `first_parent` is what makes this affordable and correct: it walks the trunk
+    itself rather than every commit of every branch ever merged into it. On that
+    line a merge commit means an MR did its job, and anything with a single
+    parent is a change that arrived some other way.
+    """
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    trunks = [
+        (pid, b["name"]) for pid, listing in branches.items() for b in listing
+        if (b.get("default") or b.get("protected"))
+        # The listing already says when this branch was last committed to. If
+        # that was before the window, its history inside the window is empty and
+        # reading it would be a round trip to be told nothing happened.
+        and _recent((b.get("commit") or {}).get("committed_date"), days)
+    ]
+    histories = await asyncio.gather(*[
+        gl.try_get(f"/projects/{pid}/repository/commits",
+                   {"ref_name": name, "first_parent": "true", "since": since, "per_page": 100})
+        for pid, name in trunks
+    ])
+
+    # A protected branch and the default branch share history, so the same
+    # commit turns up on both. It is one commit that skipped review, not two:
+    # collect the branches it sits on instead of repeating it per branch.
+    suspects: dict[tuple[int, str], dict] = {}
+    for (pid, name), r in zip(trunks, histories):
+        for c in (r.json() if r is not None else []):
+            if not arrived_without_a_merge(c):
+                continue
+            found = suspects.setdefault((pid, c["id"]), {"commit": c, "branches": []})
+            found["branches"].append(name)
+    log.debug("commits_without_mr: %s suspects on %s trunks", len(suspects), len(trunks))
+
+    # A squash or fast-forward merge also leaves one parent, so the shape of the
+    # commit cannot settle it — only GitLab knows whether an MR carried it.
+    carried = await asyncio.gather(*[
+        gl.try_get(f"/projects/{pid}/repository/commits/{sha}/merge_requests")
+        for pid, sha in suspects
+    ])
+
+    out = []
+    for ((pid, _), found), r in zip(suspects.items(), carried):
+        if r is None or r.json():
+            continue
+        c, project = found["commit"], projects.get(pid) or {}
+        out.append({
+            "project_id":   pid,
+            "project_path": project.get("path_with_namespace") or "",
+            "project_url":  project.get("web_url"),
+            "branches":     found["branches"],
+            "short_id":     c.get("short_id") or "",
+            "title":        c.get("title") or "",
+            "author":       c.get("author_name") or "",
+            "created_at":   c.get("committed_date"),
+            "web_url":      c.get("web_url"),
+        })
+    out.sort(key=lambda c: c.get("created_at") or "", reverse=True)
+    return out
+
+
+async def unreviewed(gl: GL, project_ids: list[int], days: int, refresh: bool = False) -> dict:
+    """Both halves of "what has not been through review", from one branch listing."""
+    key = gl.key("unreviewed", days, tuple(sorted(project_ids)))
+    cached = cache.unreviewed.get(key)
+    if cached is not MISS and not refresh:
+        return cached
+
+    projects = {p["id"]: p for p in await fetch_projects(gl)}
+    ids = project_ids or list(projects)
+    branches = await project_branches(gl, ids)
+
+    branch_rows, commit_rows = await asyncio.gather(
+        branches_without_mr(gl, projects, branches, days),
+        commits_without_mr(gl, projects, branches, days),
+    )
+    result = {"branches": branch_rows, "commits": commit_rows}
+    cache.unreviewed.set(key, result)
+    log.info("unreviewed: %s branches, %s commits across %s projects",
+             len(branch_rows), len(commit_rows), len(ids))
+    return result

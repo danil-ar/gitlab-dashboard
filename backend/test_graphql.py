@@ -145,7 +145,7 @@ def test_rest_field_names_are_preserved():
     assert mr["target_branch"] == "develop"
     assert mr["references"]["full"] == "team/backend!354"
     assert mr["state"] == "opened"
-    assert mr["labels"] == ["needs-refactoring"]
+    assert mr["labels"] == [{"title": "needs-refactoring", "color": None, "text_color": None}]
 
 
 def test_approvers_arrive_without_a_second_call():
@@ -444,3 +444,15 @@ def test_thread_previews_are_not_part_of_the_list_shape():
                 resolvableDiscussionsCount=12, resolvedDiscussionsCount=11)
     stats = graphql.map_merge_request(node, 1515, BASE)["discussion_stats"]
     assert set(stats) == {"resolved", "total"}
+
+
+def test_label_colours_are_carried_through():
+    """GitLab holds the colour the team picked for each label; rendering every
+    label the same grey throws that away and invites the dashboard to invent its
+    own emphasis instead."""
+    node = dict(PAYLOAD["data"]["projects"]["nodes"][0]["mergeRequests"]["nodes"][0],
+                labels={"nodes": [{"title": "security-concern", "color": "#dc143c",
+                                   "textColor": "#ffffff"}]})
+    assert graphql.map_merge_request(node, 1515, BASE)["labels"] == [
+        {"title": "security-concern", "color": "#dc143c", "text_color": "#ffffff"},
+    ]

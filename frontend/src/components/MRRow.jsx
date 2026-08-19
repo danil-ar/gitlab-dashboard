@@ -1,10 +1,14 @@
+import { useState } from "react";
+
 import Avatar from "./Avatar";
+import CommitPreview from "./CommitPreview";
 import PipelineStatus from "./PipelineStatus";
 import ThreadsStatus, { ThreadPreview } from "./ThreadsStatus";
 import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { timeAgo } from "../utils/timeAgo";
-import { MERGE_STATUS } from "../constants";
+import { MERGE_STATUS, STALE_DAYS } from "../constants";
+import { copyText, reviewMessage } from "../utils/reviewMessage";
 
 /** Changed lines, as a reviewer reads them: how big a bite is this. */
 function DiffSize({ stats }) {
@@ -21,7 +25,46 @@ function DiffSize({ stats }) {
   );
 }
 
+/** Copies the "ready for review" announcement for this MR, in the shape the
+ *  team already writes by hand. */
+function CopyMessage({ mr }) {
+  const [copied, setCopied] = useState(false);
+
+  const onClick = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (await copyText(reviewMessage(mr))) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }
+  };
+
+  return (
+    <button
+      onClick={onClick}
+      title="Copy the review announcement for chat"
+      className={`shrink-0 p-1 rounded transition-opacity ${
+        copied ? "opacity-100 text-green-600" : "opacity-0 group-hover:opacity-100 text-gray-400 hover:text-gray-700"
+      }`}
+    >
+      {copied ? (
+        <svg viewBox="0 0 16 16" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <path d="M3 8.5 6.5 12 13 4.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      ) : (
+        <svg viewBox="0 0 16 16" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" />
+          <path d="M10.5 3.5h-7a1 1 0 0 0-1 1v7" strokeLinecap="round" />
+        </svg>
+      )}
+    </button>
+  );
+}
+
 export default function MRRow({ mr, currentUserId, bucket, selected, onToggle }) {
+  const isStale = (iso) =>
+    iso && (Date.now() - new Date(iso).getTime()) / 86_400_000 >= STALE_DAYS;
+
   const cleanTitle = mr.title.replace(/^(Draft|WIP):\s*/i, "");
   const isDraft    = mr.draft || /^(Draft|WIP):/i.test(mr.title);
   const proj       = mr.references?.full?.split("!")[0] ?? "";
@@ -48,16 +91,6 @@ export default function MRRow({ mr, currentUserId, bucket, selected, onToggle })
              className="text-sm font-semibold text-gray-900 group-hover:text-blue-700 hover:underline truncate transition-colors">
             {cleanTitle}
           </a>
-          {isDraft && <Badge variant="secondary" className="shrink-0">Draft</Badge>}
-          {mr.has_conflicts && <Badge variant="destructive" className="shrink-0">conflicts</Badge>}
-          {!isDraft && !mr.has_conflicts && MERGE_STATUS[mr.detailed_merge_status] && (
-            <Badge
-              className={`shrink-0 ${MERGE_STATUS[mr.detailed_merge_status].cls}`}
-              title={MERGE_STATUS[mr.detailed_merge_status].hint}
-            >
-              {MERGE_STATUS[mr.detailed_merge_status].label}
-            </Badge>
-          )}
           {activities && (() => {
             const previews = activities.new_thread_previews ?? [];
             const parts = [
@@ -81,26 +114,17 @@ export default function MRRow({ mr, currentUserId, bucket, selected, onToggle })
                   className="w-[400px] max-h-[420px] overflow-y-auto p-0 rounded-xl border-gray-200 bg-white shadow-xl [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200 [&::-webkit-scrollbar-thumb]:rounded-full"
                 >
                   <div className="p-2.5 space-y-3">
-                    {activities.commits?.length > 0 && (() => {
-                      const projectUrl = mr.web_url?.split("/-/")[0] ?? "";
-                      return (
-                        <div>
-                          <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-amber-600 mb-1.5">
-                            <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
-                            New commits · {activities.commits.length}
-                          </div>
-                          <div className="space-y-0.5">
-                            {activities.commits.map((c) => (
-                              <a key={c.short_id} href={`${projectUrl}/-/commit/${c.id}`} target="_blank" rel="noopener noreferrer"
-                                 className="flex gap-2 items-baseline py-1 px-1.5 hover:bg-gray-50 rounded-md transition-colors">
-                                <code className="text-amber-700 shrink-0 text-[10px] font-mono">{c.short_id}</code>
-                                <span className="text-gray-600 text-[12px] truncate">{c.title}</span>
-                              </a>
-                            ))}
-                          </div>
+                    {activities.commits?.length > 0 && (
+                      <div>
+                        <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-amber-600 mb-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
+                          New commits · {activities.commits.length}
                         </div>
-                      );
-                    })()}
+                        <div className="space-y-1.5">
+                          {activities.commits.map((c) => <CommitPreview key={c.id} c={c} />)}
+                        </div>
+                      </div>
+                    )}
                     {previews.length > 0 && (
                       <div className={activities.commits?.length > 0 ? "border-t border-gray-100 pt-2.5" : ""}>
                         <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-orange-500 mb-1.5">
@@ -119,8 +143,39 @@ export default function MRRow({ mr, currentUserId, bucket, selected, onToggle })
               </Popover>
             );
           })()}
+          {isDraft && <Badge variant="secondary" className="shrink-0">Draft</Badge>}
+          {mr.has_conflicts && <Badge variant="destructive" className="shrink-0">conflicts</Badge>}
+          {!isDraft && !mr.has_conflicts && MERGE_STATUS[mr.detailed_merge_status] && (
+            <Badge
+              className={`shrink-0 ${MERGE_STATUS[mr.detailed_merge_status].cls}`}
+              title={MERGE_STATUS[mr.detailed_merge_status].hint}
+            >
+              {MERGE_STATUS[mr.detailed_merge_status].label}
+            </Badge>
+          )}
+          {mr.labels?.slice(0, 3).map((l) => {
+            // REST hands labels down as plain strings, GraphQL as objects with
+            // the colour the team chose in GitLab. The filled colour is also
+            // what keeps them apart from the state chips beside them: those are
+            // facts the dashboard computed, these are notes people wrote.
+            const title = typeof l === "string" ? l : l.title;
+            const style = typeof l === "string" || !l.color ? undefined
+              : { backgroundColor: l.color, color: l.text_color, borderColor: l.color };
+            return (
+              <Badge key={title} variant="outline" style={style}
+                     className="shrink-0 max-w-[140px] truncate text-[10px] text-gray-500 h-4 px-1.5 py-0">
+                {title}
+              </Badge>
+            );
+          })}
+          {mr.labels?.length > 3 && (
+            <span className="text-[10px] text-gray-400 shrink-0" title={mr.labels.slice(3).map((l) => (typeof l === "string" ? l : l.title)).join(", ")}>
+              +{mr.labels.length - 3}
+            </span>
+          )}
+          <CopyMessage mr={mr} />
         </div>
-        <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-gray-500 min-w-0 flex-wrap">
+        <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-gray-500 min-w-0 flex-nowrap overflow-hidden">
           <span className="font-mono shrink-0 truncate max-w-[200px]">{proj}<span className="text-gray-400">!{mr.iid}</span></span>
           <span className="text-gray-300 shrink-0">·</span>
           <span className="shrink-0">by <span className="text-gray-700">{mr.author?.name}</span></span>
@@ -130,7 +185,6 @@ export default function MRRow({ mr, currentUserId, bucket, selected, onToggle })
             <span className="text-gray-400">→</span>
             <code className="bg-gray-100 px-1 rounded text-[10px]">{mr.target_branch}</code>
           </span>
-          {mr.labels?.slice(0, 3).map((l) => <Badge key={l} variant="outline" className="text-[10px] text-gray-500 h-4 px-1.5 py-0">{l}</Badge>)}
         </div>
       </div>
 
@@ -161,7 +215,7 @@ export default function MRRow({ mr, currentUserId, bucket, selected, onToggle })
             <span className="text-xs text-green-700 font-semibold tabular-nums">{mr.approved_by_users.length}</span>
           </>
         ) : (
-          <span className="text-[11px] text-gray-400">no approvals</span>
+          <span className="text-[11px] text-gray-400" title="No approvals yet">—</span>
         )}
       </div>
 
@@ -172,7 +226,9 @@ export default function MRRow({ mr, currentUserId, bucket, selected, onToggle })
         {!mr.assignees?.length && <span className="text-[11px] text-gray-400">—</span>}
       </div>
 
-      <span className="w-[56px] text-right text-[11px] text-gray-400 tabular-nums shrink-0">
+      <span className={`w-[56px] text-right text-[11px] tabular-nums shrink-0 ${
+        isStale(mr.updated_at) ? "text-gray-600 font-medium" : "text-gray-400"
+      }`}>
         {timeAgo(mr.updated_at)}
       </span>
     </div>

@@ -33,6 +33,10 @@ export const MERGE_STATUS = {
   NEED_REBASE: { label: "needs rebase", hint: "The branch has to be rebased before merging", cls: "bg-amber-50 text-amber-700 border-amber-300" },
 };
 
+// Past this, an MR reads as sitting rather than moving, and its age is worth
+// noticing without reading the number.
+export const STALE_DAYS = 30;
+
 export const BUCKETS = {
   needs:    { id: "needs",    label: "Needs your review",         description: "Open MRs in your projects you haven't approved yet", accentBar: "before:bg-orange-500", iconColor: "text-orange-600", pillBg: "bg-orange-500 text-white",        headerBorder: "border-l-orange-500", headerBg: "bg-orange-50/60" },
   approved: { id: "approved", label: "You approved",             description: "You approved, but the MR is still waiting to merge", accentBar: "before:bg-green-500",  iconColor: "text-green-600",  pillBg: "bg-green-100 text-green-700",     headerBorder: "border-l-green-500",  headerBg: "bg-green-50/60"  },

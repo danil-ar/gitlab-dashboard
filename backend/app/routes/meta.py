@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 
 from .. import cache, graphql, service
-from ..config import DEFAULT_GROUP, DEFAULT_URL, USE_GRAPHQL
+from ..config import DEFAULT_GROUP, DEFAULT_URL, JIRA_URL, USE_GRAPHQL
 from ..gitlab import GL, fetch_public
 from ..session import get_gl
 
@@ -37,6 +37,7 @@ async def config():
     return {
         "gitlab_url":    DEFAULT_URL   or None,
         "default_group": DEFAULT_GROUP or None,
+        "jira_url":      JIRA_URL      or None,
     }
 
 
