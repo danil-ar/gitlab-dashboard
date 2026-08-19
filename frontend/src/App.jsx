@@ -95,8 +95,12 @@ function App({ activeProfile, profiles, onRefresh }) {
   useEffect(() => {
     if (view.kind !== "browse") return;
     const t = setTimeout(() => {
-      setPage(1);
-      setFilters((prev) => ({ ...prev, search: searchInput }));
+      // Entering a browse view runs this too, with the same empty box. Handing
+      // back `prev` untouched keeps that from looking like a new query.
+      setFilters((prev) =>
+        (prev.search ?? "") === searchInput ? prev : { ...prev, search: searchInput }
+      );
+      setPage((p) => (p === 1 ? p : 1));
     }, 400);
     return () => clearTimeout(t);
   }, [searchInput, view.kind]);
@@ -186,19 +190,30 @@ function App({ activeProfile, profiles, onRefresh }) {
           }))
         );
 
-        bgFetch("/api/merge-requests/discussion-stats-batch", (statsBatch) =>
-          applyPatch((mr) => ({
-            ...mr,
-            discussion_stats: statsBatch[`${mr.project_id}_${mr.iid}`] ?? null,
-          }))
-        );
+        // Counters ride along with the GraphQL list; the thread text behind them
+        // is fetched by ThreadsStatus for the one row somebody actually opens,
+        // instead of downloading every thread of every MR to render "11/12".
+        const statsIncluded = (json.items ?? []).some((mr) => "discussion_stats" in mr);
+        if (!statsIncluded) {
+          bgFetch("/api/merge-requests/discussion-stats-batch", (statsBatch) =>
+            applyPatch((mr) => ({
+              ...mr,
+              discussion_stats: statsBatch[`${mr.project_id}_${mr.iid}`] ?? null,
+            }))
+          );
+        }
 
-        bgFetch("/api/merge-requests/pipelines-batch", (pipelinesBatch) =>
-          applyPatch((mr) => ({
-            ...mr,
-            pipeline: pipelinesBatch[`${mr.project_id}_${mr.iid}`] ?? null,
-          }))
-        );
+        // The GraphQL path already ships pipelines with the list; asking again
+        // would spend the round trip the switch was meant to save.
+        const pipelinesIncluded = (json.items ?? []).some((mr) => "pipeline" in mr);
+        if (!pipelinesIncluded) {
+          bgFetch("/api/merge-requests/pipelines-batch", (pipelinesBatch) =>
+            applyPatch((mr) => ({
+              ...mr,
+              pipeline: pipelinesBatch[`${mr.project_id}_${mr.iid}`] ?? null,
+            }))
+          );
+        }
       }
     } catch (e) {
       if (loadIdRef.current !== myLoadId) return;
@@ -208,8 +223,15 @@ function App({ activeProfile, profiles, onRefresh }) {
     }
   }, []);
 
+  // What the loader watches are objects, and React compares those by identity —
+  // so a re-render that rebuilds `filters` with identical contents used to cost
+  // a second full fetch of the same page. Compare the query instead.
+  const lastQueryRef = useRef("");
   useEffect(() => {
     if (view.kind === "todo") return;
+    const query = JSON.stringify([view.kind, page, filters, [...selectedProjectIds].sort()]);
+    if (query === lastQueryRef.current) return;
+    lastQueryRef.current = query;
     load(filters, page, view.kind === "triage", selectedProjectIds);
   }, [load, filters, page, view.kind, selectedProjectIds]);
 
@@ -231,24 +253,29 @@ function App({ activeProfile, profiles, onRefresh }) {
     setFilters((prev) => ({ ...prev, [key]: e.target.value }));
   };
 
-  const navigateBrowse = (state) => {
-    setData(null);
-    setFilters((prev) => ({ ...prev, state }));
+  // The loader skips a query it has already run, so blanking the list on a
+  // navigation that changes nothing would leave it blank. Re-selecting the tab
+  // or project you are already looking at is that case.
+  const goBrowse = (patch) => {
+    const unchanged = view.kind === "browse"
+      && Object.entries(patch).every(([key, value]) => filters[key] === value);
+    if (!unchanged) {
+      setData(null);
+      setFilters((prev) => ({ ...prev, ...patch }));
+    }
     setView({ kind: "browse" });
     setPage(1);
   };
+
+  const navigateBrowse = (state) => goBrowse({ state });
 
   const handleSettingsClose = () => {
     setShowSettings(false);
     setSelectedProjectIds(loadSelectedProjects(profileId));
   };
 
-  const handleProjectClick = (projectId) => {
-    setData(null);
-    setFilters((prev) => ({ ...prev, project_id: String(projectId), state: "opened" }));
-    setView({ kind: "browse" });
-    setPage(1);
-  };
+  const handleProjectClick = (projectId) =>
+    goBrowse({ project_id: String(projectId), state: "opened" });
 
   const visibleProjects = (selectedProjectIds.size > 0
     ? projects.filter((p) => selectedProjectIds.has(p.id))

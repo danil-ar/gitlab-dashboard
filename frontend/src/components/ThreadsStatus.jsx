@@ -139,7 +139,10 @@ export default function ThreadsStatus({ stats: propStats, projectId, iid, mrUrl 
   const [fetchedStats, setFetchedStats] = useState(null);
   const [loading, setLoading]           = useState(false);
 
-  const stats = propStats ?? fetchedStats;
+  // The list carries the counters; the thread text arrives only for a row
+  // somebody opens, so the fetched object is the richer of the two.
+  const stats      = fetchedStats ?? propStats;
+  const hasThreads = !!stats && "unresolved_previews" in stats;
 
   useEffect(() => {
     fetchedRef.current = false;
@@ -149,7 +152,7 @@ export default function ThreadsStatus({ stats: propStats, projectId, iid, mrUrl 
   }, [projectId, iid]);
 
   const handleOpen = (open) => {
-    if (!open || stats || fetchedRef.current) return;
+    if (!open || hasThreads || fetchedRef.current) return;
     fetchedRef.current = true;
     setLoading(true);
     abortRef.current = new AbortController();
@@ -168,10 +171,6 @@ export default function ThreadsStatus({ stats: propStats, projectId, iid, mrUrl 
   }
 
   const allResolved    = stats ? stats.resolved === stats.total : false;
-  const hasPreviewable = stats
-    ? (stats.unresolved_previews?.length ?? 0) + (stats.resolved_previews?.length ?? 0) > 0
-    : false;
-
   return (
     <Popover onOpenChange={handleOpen}>
       <PopoverTrigger asChild>

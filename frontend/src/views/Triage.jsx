@@ -37,10 +37,17 @@ export default function Triage({ data, loading, error, currentUser, view, refres
     return next;
   });
 
+  // MRs without diff stats (the REST paths do not carry them) sort last rather
+  // than pretending to be empty ones.
+  const changedLines = (mr) => mr.diff_stats
+    ? (mr.diff_stats.additions ?? 0) + (mr.diff_stats.deletions ?? 0)
+    : Number.POSITIVE_INFINITY;
+
   const sortFn = useMemo(() => ({
-    newest: (a, b) => new Date(b.updated_at) - new Date(a.updated_at),
-    oldest: (a, b) => new Date(a.updated_at) - new Date(b.updated_at),
-    title:  (a, b) => a.title.localeCompare(b.title),
+    newest:  (a, b) => new Date(b.updated_at) - new Date(a.updated_at),
+    oldest:  (a, b) => new Date(a.updated_at) - new Date(b.updated_at),
+    title:   (a, b) => a.title.localeCompare(b.title),
+    size:    (a, b) => changedLines(a) - changedLines(b),
   })[sortBy], [sortBy]);
 
   const all = data?.items ?? [];
@@ -251,6 +258,7 @@ export default function Triage({ data, loading, error, currentUser, view, refres
             >
               <option value="newest">Newest first</option>
               <option value="oldest">Oldest first</option>
+              <option value="size">Smallest first</option>
               <option value="title">Title A→Z</option>
             </select>
           </div>

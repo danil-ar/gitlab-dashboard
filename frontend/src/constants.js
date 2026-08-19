@@ -25,6 +25,14 @@ export const PIPELINE = {
   preparing:            { dot: "bg-yellow-300",             label: "preparing" },
 };
 
+// GitLab's detailed_merge_status. Only states worth a chip are listed: things
+// the row already shows in its own column (threads, approvals, conflicts) would
+// just be saying the same thing twice.
+export const MERGE_STATUS = {
+  MERGEABLE:   { label: "ready",       hint: "Every merge requirement is met",              cls: "bg-green-50 text-green-700 border-green-300" },
+  NEED_REBASE: { label: "needs rebase", hint: "The branch has to be rebased before merging", cls: "bg-amber-50 text-amber-700 border-amber-300" },
+};
+
 export const BUCKETS = {
   needs:    { id: "needs",    label: "Needs your review",         description: "Open MRs in your projects you haven't approved yet", accentBar: "before:bg-orange-500", iconColor: "text-orange-600", pillBg: "bg-orange-500 text-white",        headerBorder: "border-l-orange-500", headerBg: "bg-orange-50/60" },
   approved: { id: "approved", label: "You approved",             description: "You approved, but the MR is still waiting to merge", accentBar: "before:bg-green-500",  iconColor: "text-green-600",  pillBg: "bg-green-100 text-green-700",     headerBorder: "border-l-green-500",  headerBg: "bg-green-50/60"  },

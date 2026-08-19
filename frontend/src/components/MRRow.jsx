@@ -4,6 +4,22 @@ import ThreadsStatus, { ThreadPreview } from "./ThreadsStatus";
 import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { timeAgo } from "../utils/timeAgo";
+import { MERGE_STATUS } from "../constants";
+
+/** Changed lines, as a reviewer reads them: how big a bite is this. */
+function DiffSize({ stats }) {
+  if (!stats || (stats.additions == null && stats.deletions == null)) return null;
+  const files = stats.files;
+  return (
+    <span
+      className="shrink-0 tabular-nums font-mono"
+      title={files != null ? `${files} file${files === 1 ? "" : "s"} changed` : undefined}
+    >
+      <span className="text-green-600">+{stats.additions ?? 0}</span>
+      <span className="text-red-500 ml-1">−{stats.deletions ?? 0}</span>
+    </span>
+  );
+}
 
 export default function MRRow({ mr, currentUserId, bucket, selected, onToggle }) {
   const cleanTitle = mr.title.replace(/^(Draft|WIP):\s*/i, "");
@@ -34,6 +50,14 @@ export default function MRRow({ mr, currentUserId, bucket, selected, onToggle })
           </a>
           {isDraft && <Badge variant="secondary" className="shrink-0">Draft</Badge>}
           {mr.has_conflicts && <Badge variant="destructive" className="shrink-0">conflicts</Badge>}
+          {!isDraft && !mr.has_conflicts && MERGE_STATUS[mr.detailed_merge_status] && (
+            <Badge
+              className={`shrink-0 ${MERGE_STATUS[mr.detailed_merge_status].cls}`}
+              title={MERGE_STATUS[mr.detailed_merge_status].hint}
+            >
+              {MERGE_STATUS[mr.detailed_merge_status].label}
+            </Badge>
+          )}
           {activities && (() => {
             const previews = activities.new_thread_previews ?? [];
             const parts = [
@@ -108,6 +132,12 @@ export default function MRRow({ mr, currentUserId, bucket, selected, onToggle })
           </span>
           {mr.labels?.slice(0, 3).map((l) => <Badge key={l} variant="outline" className="text-[10px] text-gray-500 h-4 px-1.5 py-0">{l}</Badge>)}
         </div>
+      </div>
+
+      {/* Its own column, not part of the meta line: sizes are only worth showing
+          if you can compare them down the list at a glance. */}
+      <div className="w-[88px] hidden lg:flex justify-end shrink-0 text-[11px]">
+        <DiffSize stats={mr.diff_stats} />
       </div>
 
       <div className="w-[72px] hidden md:flex shrink-0">
