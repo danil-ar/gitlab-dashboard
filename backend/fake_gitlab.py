@@ -115,6 +115,21 @@ TRUNK_COMMITS = {
 # only the squashed one was carried by a merge request
 COMMIT_MRS = {"sqh222": [{"iid": 100}]}
 
+
+def todo(tid, action, mr):
+    return {"id": tid, "action_name": action, "target_type": "MergeRequest",
+            "created_at": AFTER, "author": OTHER, "target": mr}
+
+# GitLab writes "@name, take a look" down as directly_addressed, not mentioned
+TODOS = [
+    todo(1, "mentioned", MRS[1][1]),
+    todo(2, "directly_addressed", MRS[1][0]),
+    todo(3, "assigned", MRS[2][0]),          # not a mention
+    {"id": 4, "action_name": "mentioned", "target_type": "Issue", "created_at": AFTER,
+     "author": OTHER, "target": {"id": 999}},   # not a merge request
+]
+
+
 hits = Counter()
 BROKEN = {"graphql": False}
 MAX_COMPLEXITY = 250  # same ceiling the real instance reported
@@ -301,8 +316,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/v4/merge_requests":
             return self._send([], headers={"X-Total-Pages": "1"})
         if path == "/api/v4/todos":
-            return self._send([{"id": 1, "action_name": "mentioned", "target_type": "MergeRequest",
-                                "created_at": AFTER, "author": OTHER, "target": MRS[1][0]}])
+            params = dict(x.split("=", 1) for x in query.split("&") if "=" in x)
+            todos = TODOS
+            # the real endpoint filters server-side, and asking for one action
+            # is how the mention list used to miss half of itself
+            if "action" in params:
+                todos = [t for t in todos if t["action_name"] == params["action"]]
+            return self._send(todos)
         return self._send({"message": "404 Not Found"}, 404)
 
 

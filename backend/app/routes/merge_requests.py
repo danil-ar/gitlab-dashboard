@@ -111,6 +111,13 @@ async def merge_requests(
 
     ids = [int(x) for x in project_ids.split(",") if x.strip().isdigit()] if project_ids else []
 
+    # One project is a list of one. Sending it down the same path as the rest
+    # buys the whole GraphQL payload — approvers, pipeline, diff size, thread
+    # counts — instead of a bare REST list the client then has to fill in with
+    # three batch calls. Search is the exception: only REST can filter by text.
+    if project_id and not search:
+        ids = [project_id]
+
     def paginate(all_mrs: list[dict], known_total: int | None = None) -> tuple[list[dict], int, int]:
         total = len(all_mrs) if known_total is None else known_total
         total_pages = max(1, -(-total // per_page))
@@ -125,7 +132,10 @@ async def merge_requests(
             # No project filter → targeted queries to avoid scope=all timeout on large instances
             mr_list = await service.fetch_targeted_mrs(gl, base_params)
         total, total_pages = len(mr_list), 1
-    elif project_id:
+    elif project_id and search:
+        # Only REST can filter by text, so a search inside one project stays
+        # here. Everything else about that project now goes the GraphQL way,
+        # below, with `ids` holding it alone.
         r = await gl.get(f"/projects/{project_id}/merge_requests",
                          {**base_params, "scope": scope, "page": page, "per_page": per_page})
         mr_list     = r.json()

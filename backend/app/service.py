@@ -484,3 +484,27 @@ async def unreviewed(gl: GL, project_ids: list[int], days: int, refresh: bool = 
     log.info("unreviewed: %s branches, %s commits across %s projects",
              len(branch_rows), len(commit_rows), len(ids))
     return result
+
+
+# GitLab splits being tagged in two: `mentioned` when your handle appears
+# somewhere in the body, `directly_addressed` when the comment opens with it.
+# Asking only for the first misses every "@name, take a look" ever written.
+MENTION_ACTIONS = ("mentioned", "directly_addressed")
+
+
+async def mentioned_merge_requests(gl: GL) -> list[dict]:
+    """Merge requests where somebody tagged you and you have not looked yet."""
+    todos = (await gl.get("/todos", {"state": "pending", "per_page": 100})).json()
+    seen: set = set()
+    out: list[dict] = []
+    for todo in todos:
+        if todo.get("target_type") != "MergeRequest":
+            continue
+        if todo.get("action_name") not in MENTION_ACTIONS:
+            continue
+        target = todo.get("target") or {}
+        mid = target.get("id")
+        if mid and mid not in seen:
+            seen.add(mid)
+            out.append(target)
+    return out

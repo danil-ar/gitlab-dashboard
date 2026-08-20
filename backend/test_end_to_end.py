@@ -140,3 +140,56 @@ async def test_a_page_of_merge_requests_does_not_read_the_whole_history(gl):
 async def test_triage_still_reads_every_merge_request(gl):
     mrs, total = await service.fetch_mrs_for_projects(gl, [1, 2, 3], {"state": "opened"})
     assert len(mrs) == total == 121
+
+
+# ─── being tagged ─────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_both_kinds_of_mention_are_counted(gl):
+    """GitLab files "@name, take a look" as directly_addressed and a name buried
+    in a sentence as mentioned. Asking for one kind loses the other, and it is
+    the one people actually write."""
+    mrs = await service.mentioned_merge_requests(gl)
+    assert {mr["iid"] for mr in mrs} == {1, 2}
+
+
+@pytest.mark.asyncio
+async def test_todos_that_are_not_mentions_are_left_alone(gl):
+    """An assignment is somebody else's bucket, and an issue is not a merge
+    request at all."""
+    mrs = await service.mentioned_merge_requests(gl)
+    assert all(mr.get("project_id") == 1 for mr in mrs)
+    assert 999 not in {mr["id"] for mr in mrs}
+
+
+# ─── which path a request takes ───────────────────────────────────────────────
+
+async def browse(gl, **kw):
+    """The merge-requests route, called with every query parameter spelled out —
+    FastAPI's defaults are Query objects and only it knows how to unwrap them."""
+    from app.routes.merge_requests import merge_requests
+    params = {"state": "merged", "scope": "all", "triage": False, "page": 1,
+              "per_page": 25, "search": "", "project_id": None, "project_ids": "", "gl": gl}
+    return await merge_requests(**{**params, **kw})
+
+
+@pytest.mark.asyncio
+async def test_one_project_is_read_the_same_way_as_several(gl):
+    """A single project used to take a REST branch of its own, which returned a
+    bare list: no approvers, no pipeline, no thread counts, leaving the client
+    to fetch all three per merge request afterwards."""
+    page = await browse(gl, project_id=1)
+    assert page["items"], "the project has merge requests"
+    assert calls("/api/graphql") == 1
+    first = page["items"][0]
+    assert "approved_by_users" in first
+    assert "pipeline" in first
+    assert "discussion_stats" in first
+
+
+@pytest.mark.asyncio
+async def test_searching_one_project_still_goes_to_rest(gl):
+    """GraphQL cannot filter by text, so this is the one case that stays."""
+    await browse(gl, project_id=1, search="anything")
+    assert calls("/api/graphql") == 0
+    assert calls("/api/v4/projects/N/merge_requests") == 1

@@ -87,8 +87,10 @@ export default function MRRow({ mr, currentUserId, bucket, selected, onToggle })
 
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5 min-w-0">
-          <a href={mr.web_url} target="_blank" rel="noopener noreferrer"
-             className="text-sm font-semibold text-gray-900 group-hover:text-blue-700 hover:underline truncate transition-colors">
+          {/* a title the row had to cut should still be readable without
+              opening the merge request */}
+          <a href={mr.web_url} target="_blank" rel="noopener noreferrer" title={cleanTitle}
+             className="min-w-[7rem] text-sm font-semibold text-gray-900 group-hover:text-blue-700 hover:underline truncate transition-colors">
             {cleanTitle}
           </a>
           {activities && (() => {
@@ -143,6 +145,12 @@ export default function MRRow({ mr, currentUserId, bucket, selected, onToggle })
               </Popover>
             );
           })()}
+          {mr.mentions_you && (
+            <Badge className="shrink-0 bg-purple-50 text-purple-700 border-purple-300"
+                   title="Somebody tagged you in a comment here">
+              tagged you
+            </Badge>
+          )}
           {isDraft && <Badge variant="secondary" className="shrink-0">Draft</Badge>}
           {mr.has_conflicts && <Badge variant="destructive" className="shrink-0">conflicts</Badge>}
           {!isDraft && !mr.has_conflicts && MERGE_STATUS[mr.detailed_merge_status] && (
@@ -153,7 +161,12 @@ export default function MRRow({ mr, currentUserId, bucket, selected, onToggle })
               {MERGE_STATUS[mr.detailed_merge_status].label}
             </Badge>
           )}
-          {mr.labels?.slice(0, 3).map((l) => {
+          {/* One label and a count for the rest. Whether the others would have
+              fitted is a question only a measured layout could answer, and a
+              row whose width depends on how many tags somebody added is worse
+              than a row that always looks the same. The full list is one hover
+              away. */}
+          {mr.labels?.slice(0, 1).map((l) => {
             // REST hands labels down as plain strings, GraphQL as objects with
             // the colour the team chose in GitLab. The filled colour is also
             // what keeps them apart from the state chips beside them: those are
@@ -162,15 +175,20 @@ export default function MRRow({ mr, currentUserId, bucket, selected, onToggle })
             const style = typeof l === "string" || !l.color ? undefined
               : { backgroundColor: l.color, color: l.text_color, borderColor: l.color };
             return (
+              // Badge is a centred flex box, so squeezing it clips the text at
+              // both ends and never shows an ellipsis. It keeps its width; the
+              // cut, when a label name is genuinely long, happens on the text
+              // inside, where text-overflow works.
               <Badge key={title} variant="outline" style={style}
-                     className="shrink-0 max-w-[140px] truncate text-[10px] text-gray-500 h-4 px-1.5 py-0">
-                {title}
+                     className="max-w-[9rem] text-[10px] text-gray-500 h-4 px-1.5 py-0">
+                <span className="truncate">{title}</span>
               </Badge>
             );
           })}
-          {mr.labels?.length > 3 && (
-            <span className="text-[10px] text-gray-400 shrink-0" title={mr.labels.slice(3).map((l) => (typeof l === "string" ? l : l.title)).join(", ")}>
-              +{mr.labels.length - 3}
+          {mr.labels?.length > 1 && (
+            <span className="text-[10px] text-gray-400 shrink-0 cursor-help"
+                  title={mr.labels.slice(1).map((l) => (typeof l === "string" ? l : l.title)).join("\n")}>
+              +{mr.labels.length - 1}
             </span>
           )}
           <CopyMessage mr={mr} />
@@ -178,7 +196,12 @@ export default function MRRow({ mr, currentUserId, bucket, selected, onToggle })
         <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-gray-500 min-w-0 flex-nowrap overflow-hidden">
           <span className="font-mono shrink-0 truncate max-w-[200px]">{proj}<span className="text-gray-400">!{mr.iid}</span></span>
           <span className="text-gray-300 shrink-0">·</span>
-          <span className="shrink-0">by <span className="text-gray-700">{mr.author?.name}</span></span>
+          {/* The one thing on this line that can lose its tail and still be
+              understood: "Богданов Ярослав А…" names the same person, while a
+              cut branch name names nothing. So the deficit is taken here. */}
+          <span className="min-w-0 truncate" title={mr.author?.name}>
+            by <span className="text-gray-700">{mr.author?.name}</span>
+          </span>
           <span className="text-gray-300 shrink-0">·</span>
           <span className="flex items-center gap-1 shrink-0">
             {issueUrl(mr) ? (

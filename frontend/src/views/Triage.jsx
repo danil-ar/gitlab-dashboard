@@ -54,12 +54,21 @@ export default function Triage({ data, loading, error, currentUser, view, refres
   const classified = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     const match = (mr) => !q || mr.title.toLowerCase().includes(q);
-    const out = { needs: [], approved: [], mine: [], mention: (mentionedMRs ?? []).filter(match) };
+    // Being tagged is not a fifth kind of merge request, it is something that
+    // happened to one. If it is already on this screen the row says so; the
+    // bucket is left holding the mentions that would otherwise be invisible —
+    // other people's merge requests, unselected projects, closed ones.
+    const listed = new Set(all.map((mr) => mr.id));
+    const tagged = new Set((mentionedMRs ?? []).map((mr) => mr.id));
+    const out = {
+      needs: [], approved: [], mine: [],
+      mention: (mentionedMRs ?? []).filter((mr) => match(mr) && !listed.has(mr.id)),
+    };
     if (!currentUser) return out;
     for (const mr of all) {
       if (!match(mr)) continue;
       const b = classifyMR(mr, currentUser.id);
-      if (b) out[b].push(mr);
+      if (b) out[b].push(tagged.has(mr.id) ? { ...mr, mentions_you: true } : mr);
     }
     ["needs", "approved", "mine", "mention"].forEach((k) => out[k].sort(sortFn));
     return out;

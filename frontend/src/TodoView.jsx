@@ -199,7 +199,7 @@ function GroupHeader({ label, count, hint }) {
 
 /* ─────────────────────────── main component ─────────────────────────── */
 
-export default function TodoView({ onUnauthorized }) {
+export default function TodoView({ onUnauthorized, onCountChange }) {
   const [todos, setTodos]      = useState([]);
   const [loading, setLoading]  = useState(false);
   const [error, setError]      = useState(null);
@@ -220,13 +220,15 @@ export default function TodoView({ onUnauthorized }) {
         return;
       }
       if (!r.ok) throw new Error(`Error ${r.status}: ${await r.text()}`);
-      setTodos(await r.json());
+      const pending = await r.json();
+      setTodos(pending);
+      onCountChange?.(pending.length);
     } catch (e) {
       setError(e.message);
     } finally {
       setLoading(false);
     }
-  }, [state, onUnauthorized]);
+  }, [state, onUnauthorized, onCountChange]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -241,7 +243,9 @@ export default function TodoView({ onUnauthorized }) {
     try {
       const r = await fetch(`/api/todos/${id}/done`, { method: "POST" });
       if (!r.ok) throw new Error(await r.text());
-      setTodos((prev) => prev.filter((t) => t.id !== id));
+      const remaining = todos.filter((t) => t.id !== id);
+      setTodos(remaining);
+      onCountChange?.(remaining.length);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -306,7 +310,7 @@ export default function TodoView({ onUnauthorized }) {
                 <FilterPill key={key} active={actionFilter === key}
                             onClick={() => setAct(actionFilter === key ? "" : key)}
                             count={n} urgent={urgent}>
-                  {meta.label.replace(" you","").replace(/^[a-z]/,(c) => c.toUpperCase())}
+                  {meta.label.replace(/ your?\b/, "").replace(/^[a-z]/, (c) => c.toUpperCase())}
                 </FilterPill>
               );
             })}

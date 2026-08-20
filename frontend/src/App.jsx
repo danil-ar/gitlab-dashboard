@@ -303,7 +303,13 @@ function App({ activeProfile, profiles, onRefresh }) {
   ];
 
   const counts = useMemo(() => {
-    const c = { needs: 0, approved: 0, mine: 0, mention: mentionedMRs.length };
+    // a mention on a merge request already in a bucket is shown on its row, so
+    // counting it here as well would count the same thing twice
+    const listed = new Set(triageItems.map((mr) => mr.id));
+    const c = {
+      needs: 0, approved: 0, mine: 0,
+      mention: mentionedMRs.filter((mr) => !listed.has(mr.id)).length,
+    };
     if (!currentUser) return c;
     for (const mr of triageItems) {
       const b = classifyMR(mr, currentUser.id);
@@ -412,7 +418,7 @@ function App({ activeProfile, profiles, onRefresh }) {
         </header>
 
         {view.kind === "todo" ? (
-          <TodoView onUnauthorized={signOut} />
+          <TodoView onUnauthorized={signOut} onCountChange={setTodoCount} />
         ) : view.kind === "branches" ? (
           <UnreviewedView selectedProjectIds={selectedProjectIds} onCount={setUnreviewedCount} />
         ) : view.kind === "triage" ? (

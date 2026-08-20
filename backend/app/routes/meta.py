@@ -102,17 +102,7 @@ async def projects(gl: GL = Depends(get_gl)):
 
 @router.get("/mentions")
 async def mentions(gl: GL = Depends(get_gl)):
-    r = await gl.get("/todos", {"action": "mentioned", "state": "pending", "per_page": 50})
-    seen: set = set()
-    mr_list: list = []
-    for todo in r.json():
-        if todo.get("target_type") != "MergeRequest":
-            continue
-        target = todo.get("target") or {}
-        mid = target.get("id")
-        if mid and mid not in seen:
-            seen.add(mid)
-            mr_list.append(target)
+    mr_list = await service.mentioned_merge_requests(gl)
     # These MRs live outside the main list, so the client never patches pipeline
     # and thread stats into them — they have to arrive complete.
     return await service.enrich(gl, mr_list, with_details=True)
