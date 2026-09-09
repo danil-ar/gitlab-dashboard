@@ -48,6 +48,10 @@ JIRA_URL      = os.environ.get("JIRA_URL", "").rstrip("/")
 SECRET_KEY    = os.environ.get("SECRET_KEY", "")
 SECURE_COOKIE = env_flag("SECURE_COOKIE")
 CORS_ORIGINS  = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
+# Путь к бандлу корневых сертификатов для похода в GitLab. Нужен, когда GitLab
+# стоит за внутренним УЦ: httpx всегда берет бандл certifi и системное хранилище
+# не смотрит. Пусто - обычная проверка по certifi.
+CA_BUNDLE     = os.environ.get("GITLAB_CA_BUNDLE", "").strip()
 
 COOKIE_NAME    = "gl_session"
 COOKIE_MAX_AGE = 60 * 60 * 24 * 365  # 1 year

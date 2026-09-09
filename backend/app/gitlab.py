@@ -10,7 +10,7 @@ from contextvars import ContextVar
 import httpx
 from fastapi import HTTPException
 
-from .config import CONCURRENCY, log
+from .config import CA_BUNDLE, CONCURRENCY, log
 
 _http: httpx.AsyncClient | None = None
 _slots: asyncio.Semaphore | None = None
@@ -25,6 +25,7 @@ async def startup() -> None:
     _http = httpx.AsyncClient(
         timeout=30,
         follow_redirects=True,
+        verify=CA_BUNDLE or True,
         limits=httpx.Limits(max_connections=CONCURRENCY * 2, max_keepalive_connections=CONCURRENCY),
     )
     _slots = asyncio.Semaphore(CONCURRENCY)
