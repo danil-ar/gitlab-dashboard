@@ -241,8 +241,13 @@ async def fetch_mrs_for_projects(gl: GL, project_ids: list[int], params: dict, w
     it could possibly show. GraphQL returns the true match count alongside, so a
     capped read still reports an honest total; REST returns None and leaves the
     caller to count the rows it got.
+
+    The GraphQL query has no text search and no "mine", so a list narrowed by
+    either goes straight to REST: answering anyway would show the whole list as
+    if it were the filtered one.
     """
-    if USE_GRAPHQL:
+    graphql_can_answer = not params.get("search") and params.get("scope", "all") == "all"
+    if USE_GRAPHQL and graphql_can_answer:
         broken_key = gl.key("graphql_broken")
         budget_key = gl.key("graphql_budget")
         if cache.graphql_broken.get(broken_key) is MISS:

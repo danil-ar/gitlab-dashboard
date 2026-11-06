@@ -193,3 +193,34 @@ async def test_searching_one_project_still_goes_to_rest(gl):
     await browse(gl, project_id=1, search="anything")
     assert calls("/api/graphql") == 0
     assert calls("/api/v4/projects/N/merge_requests") == 1
+
+
+@pytest.mark.asyncio
+async def test_searching_several_projects_only_finds_matches(gl):
+    """The GraphQL query has no text search: asked anyway, it returned every
+    merge request as if all of them had matched."""
+    page = await browse(gl, state="opened", project_ids="1,2,3", search="Fresh")
+    assert [mr["title"] for mr in page["items"]] == ["Fresh one"]
+    assert page["total"] == 1
+    assert calls("/api/graphql") == 0
+
+
+@pytest.mark.asyncio
+async def test_a_search_nothing_matches_finds_nothing(gl):
+    page = await browse(gl, state="opened", project_ids="1,2,3", search="no-such-title")
+    assert page["items"] == []
+    assert page["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_mine_across_several_projects_is_only_mine(gl):
+    """Every merge request in the fixture is somebody else's."""
+    page = await browse(gl, state="opened", project_ids="1,2,3", scope="created_by_me")
+    assert page["items"] == []
+    assert calls("/api/graphql") == 0
+
+
+@pytest.mark.asyncio
+async def test_mine_in_one_project_is_only_mine(gl):
+    page = await browse(gl, state="opened", project_id=1, scope="created_by_me")
+    assert page["items"] == []

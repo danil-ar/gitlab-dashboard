@@ -6,8 +6,8 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from .. import cache
-from ..config import JIRA_PROJECT, JIRA_URL
-from ..gitlab import GL
+from ..config import ALLOWED_GITLAB_URLS, JIRA_PROJECT, JIRA_URL
+from ..gitlab import GL, origin_of
 from ..session import clear_cookie, public_profile, read_session, write_cookie
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -23,6 +23,14 @@ class SwitchBody(BaseModel):
     profile_id: str
 
 
+def _require_allowed_address(url: str) -> None:
+    target = origin_of(url)
+    if target is None:
+        raise HTTPException(status_code=400, detail="That doesn't look like a GitLab address")
+    if ALLOWED_GITLAB_URLS and target not in {origin_of(u) for u in ALLOWED_GITLAB_URLS}:
+        raise HTTPException(status_code=400, detail="This dashboard isn't set up for that GitLab. Add it to GITLAB_ALLOWED_URLS.")
+
+
 @router.get("/profiles")
 async def auth_profiles(session: dict = Depends(read_session)):
     return {
@@ -36,6 +44,7 @@ async def auth_profiles(session: dict = Depends(read_session)):
 @router.post("/login")
 async def auth_login(body: LoginBody, response: Response, session: dict = Depends(read_session)):
     gl = GL(body.gitlab_url.strip().rstrip("/"), body.token.strip())
+    _require_allowed_address(gl.url)
     try:
         user = (await gl.get("/user")).json()
     except HTTPException as e:

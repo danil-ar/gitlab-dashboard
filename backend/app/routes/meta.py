@@ -1,30 +1,21 @@
 """Health, config, current user, projects, mentions and the avatar proxy."""
-from urllib.parse import urlsplit
-
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 
 from .. import cache, graphql, service
 from ..config import DEFAULT_GROUP, DEFAULT_URL, JIRA_URL, USE_GRAPHQL
-from ..gitlab import GL, fetch_public
+from ..gitlab import GL, fetch_public, origin_of
 from ..session import get_gl
 
 router = APIRouter(tags=["meta"])
 
 _GRAVATAR_HOSTS = {"secure.gravatar.com", "www.gravatar.com"}
-_DEFAULT_PORTS = {"http": 80, "https": 443}
-
-
-def origin_of(url: str) -> tuple[str, str, int] | None:
-    """(scheme, host, port), or None if the URL is not one we would ever call."""
-    parts = urlsplit(url)
-    if parts.scheme not in _DEFAULT_PORTS or not parts.hostname:
-        return None
-    try:
-        port = parts.port
-    except ValueError:
-        return None  # malformed port, e.g. "gitlab.example.com:443.attacker.tld"
-    return (parts.scheme, parts.hostname.lower(), port or _DEFAULT_PORTS[parts.scheme])
+# What GitLab accepts as an avatar. SVG stays out on purpose: this response comes from the
+# dashboard's own address, so a script inside one would run with the user's session.
+_AVATAR_TYPES = {
+    "image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/tiff",
+    "image/x-icon", "image/vnd.microsoft.icon",
+}
 
 
 @router.get("/health")
@@ -57,12 +48,17 @@ async def proxy_avatar(url: str = Query(..., max_length=2048), gl: GL = Depends(
     else:
         raise HTTPException(status_code=400, detail="URL not allowed")
 
-    if r.status_code != 200:
+    media_type = r.headers.get("content-type", "").split(";")[0].strip().lower()
+    if r.status_code != 200 or media_type not in _AVATAR_TYPES:
         raise HTTPException(status_code=404, detail="Avatar not available")
     return Response(
         content=r.content,
-        media_type=r.headers.get("content-type", "image/png"),
-        headers={"Cache-Control": "private, max-age=3600"},
+        media_type=media_type,
+        headers={
+            "Cache-Control": "private, max-age=3600",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+        },
     )
 
 

@@ -48,6 +48,16 @@ DEFAULT_GROUP = os.environ.get("GITLAB_DEFAULT_GROUP", "").strip()
 JIRA_URL      = os.environ.get("JIRA_URL", "").rstrip("/")
 JIRA_PROJECT  = os.environ.get("JIRA_PROJECT_KEY", "").strip()
 JIRA_RELEASE_STATUS = os.environ.get("JIRA_RELEASE_STATUS", "Включено в релиз").strip()
+# Where those issues go once the release ships. They still belong to it, or every shipped
+# release would look empty. Withdrawn work is finished too, so this can't go by Jira's category.
+JIRA_DONE_STATUSES = [s.strip() for s in os.environ.get("JIRA_DONE_STATUSES", "Выполнено").split(",") if s.strip()]
+# Which GitLab people may sign in to. The login form makes the backend call whatever address it
+# is given, so without a list anyone who can open the dashboard can aim it at internal hosts.
+ALLOWED_GITLAB_URLS = [
+    u.strip() for u in os.environ.get("GITLAB_ALLOWED_URLS", "").split(",") if u.strip()
+] or ([DEFAULT_URL] if DEFAULT_URL else [])
+if not ALLOWED_GITLAB_URLS:
+    log.warning("neither GITLAB_URL nor GITLAB_ALLOWED_URLS is set, so the login form accepts any address")
 SECRET_KEY    = os.environ.get("SECRET_KEY", "")
 SECURE_COOKIE = env_flag("SECURE_COOKIE")
 CORS_ORIGINS  = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]

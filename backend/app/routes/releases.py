@@ -47,8 +47,13 @@ async def jira_releases(jira: Jira = Depends(get_jira)):
 
 
 @router.get("/jira/releases/{version_id}/plan")
-async def jira_release_plan(version_id: int, jira: Jira = Depends(get_jira), gl: GL = Depends(get_gl)):
-    return await releases.build_plan(jira, gl, version_id)
+async def jira_release_plan(
+    version_id: int,
+    released: bool = Query(False),
+    jira: Jira = Depends(get_jira),
+    gl: GL = Depends(get_gl),
+):
+    return await releases.build_plan(jira, gl, version_id, released)
 
 
 @router.get("/jira/releases/{version_id}/repo-preview")

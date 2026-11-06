@@ -6,6 +6,7 @@ mapping, call counting and cache namespacing apply in exactly one place.
 import asyncio
 import hashlib
 from contextvars import ContextVar
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import HTTPException
@@ -20,11 +21,42 @@ _slots: asyncio.Semaphore | None = None
 _calls: ContextVar[list] = ContextVar("gitlab_calls")
 
 
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def origin_of(url: str) -> tuple[str, str, int] | None:
+    """(scheme, host, port), or None if the URL is not one we would ever call."""
+    parts = urlsplit(url)
+    if parts.scheme not in _DEFAULT_PORTS or not parts.hostname:
+        return None
+    try:
+        port = parts.port
+    except ValueError:
+        return None  # malformed port, e.g. "gitlab.example.com:443.attacker.tld"
+    return (parts.scheme, parts.hostname.lower(), port or _DEFAULT_PORTS[parts.scheme])
+
+
+async def _keep_token_home(request: httpx.Request) -> None:
+    """Drop the token when a redirect leaves its GitLab, say for the object storage that serves avatars.
+
+    httpx only does this for Authorization, and PRIVATE-TOKEN would otherwise go along to any host.
+    The one move allowed is the upgrade of the same address from http to https.
+    """
+    home = request.extensions.get("token_home")
+    if home is None:
+        return
+    target = origin_of(str(request.url))
+    upgrade = home[0] == "http" and home[2] == 80 and target == ("https", home[1], 443)
+    if target != home and not upgrade:
+        request.headers.pop("PRIVATE-TOKEN", None)
+
+
 async def startup() -> None:
     global _http, _slots
     _http = httpx.AsyncClient(
         timeout=30,
         follow_redirects=True,
+        event_hooks={"request": [_keep_token_home]},
         verify=CA_BUNDLE or True,
         limits=httpx.Limits(max_connections=CONCURRENCY * 2, max_keepalive_connections=CONCURRENCY),
     )
@@ -118,6 +150,7 @@ class GL:
         # Caches are namespaced per token: two people sharing one backend must
         # never read each other's projects out of the cache.
         self.fp = fingerprint(token)
+        self.origin = origin_of(self.url)
 
     def key(self, *parts) -> tuple:
         return (self.fp, self.url, *parts)
@@ -130,7 +163,7 @@ class GL:
         assert _http is not None and _slots is not None, "gitlab.startup() was not called"
         async with _slots:
             try:
-                return await _http.request(method, url, headers=self.headers, **kw)
+                return await _http.request(method, url, headers=self.headers, extensions={"token_home": self.origin}, **kw)
             except httpx.TimeoutException:
                 raise HTTPException(status_code=504, detail="GitLab API timeout")
             except httpx.RequestError as e:

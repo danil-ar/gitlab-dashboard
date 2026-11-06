@@ -7,6 +7,7 @@ import { Icon, IconSpin } from "../components/icons";
 
 const STATE_BADGES = {
   new_tag:   { label: "needs tag",  className: "bg-blue-50 text-blue-700",   title: "Some changes aren't in a tag yet. The deploy tag still has to be created." },
+  shipped:   { label: "shipped",    className: "bg-green-50 text-green-700", title: "All changes went out in the deploy tag." },
   tagged:    { label: "tag exists", className: "bg-green-50 text-green-700", title: "All changes are in the latest tag, so that tag is what gets deployed." },
   older_tag: { label: "older tag",  className: "bg-amber-50 text-amber-700", title: "All changes are in a tag, but newer tags exist. Check whether this repo belongs in the plan." },
   no_tags:   { label: "no tags",    className: "bg-gray-100 text-gray-600",  title: "GitLab has no vX.Y.Z tags here, so no tag is suggested." },
@@ -15,6 +16,7 @@ const STATE_BADGES = {
 
 const LEFT_OUT_BY_DEFAULT = new Set(["older_tag", "no_tags", "error"]);
 const BUILDABLE_STATES = new Set(["new_tag", "no_tags"]);
+const TAGGED_STATES = new Set(["tagged", "older_tag"]);
 const VERSION_TAG = /^v?\d+\.\d+\.\d+$/;
 
 const CHANGE_STATE_COLORS = {
@@ -138,10 +140,10 @@ function StatusBadge({ className, title, children }) {
   );
 }
 
-function RepoRow({ row, onEdit, onBuild }) {
-  const badge = STATE_BADGES[row.state];
+function RepoRow({ row, released, onEdit, onBuild }) {
+  const badge = STATE_BADGES[released && TAGGED_STATES.has(row.state) ? "shipped" : row.state];
   const disabled = row.state === "error";
-  const canBuild = row.include && BUILDABLE_STATES.has(row.state) && VERSION_TAG.test(row.deploy_tag ?? "");
+  const canBuild = !released && row.include && BUILDABLE_STATES.has(row.state) && VERSION_TAG.test(row.deploy_tag ?? "");
   return (
     <>
       <tr className={`border-t border-gray-100 ${row.include ? "" : "opacity-60"}`}>
@@ -271,7 +273,7 @@ function statusCounts(issues) {
   return [...counts].map(([name, count]) => `${name} ${count}`).join(" · ");
 }
 
-function ReleaseDetail({ release, status, filterPaths, jiraUrl, onTokenRejected }) {
+function ReleaseDetail({ release, filterPaths, jiraUrl, onTokenRejected }) {
   const [plan, setPlan]       = useState(null);
   const [error, setError]     = useState(null);
   const [loading, setLoading] = useState(true);
@@ -284,7 +286,7 @@ function ReleaseDetail({ release, status, filterPaths, jiraUrl, onTokenRejected 
     const controller = new AbortController();
     setLoading(true);
     setError(null);
-    api.get(`/api/jira/releases/${release.id}/plan`, { signal: controller.signal })
+    api.get(`/api/jira/releases/${release.id}/plan${release.released ? "?released=true" : ""}`, { signal: controller.signal })
       .then((p) => {
         setPlan(p);
         if (!keepEditsRef.current) setEdits({});
@@ -298,7 +300,7 @@ function ReleaseDetail({ release, status, filterPaths, jiraUrl, onTokenRejected 
         setLoading(false);
       });
     return () => controller.abort();
-  }, [release.id, attempt, onTokenRejected]);
+  }, [release.id, release.released, attempt, onTokenRejected]);
 
   const onEdit = (path, patch) => setEdits((prev) => ({ ...prev, [path]: { ...prev[path], ...patch } }));
 
@@ -308,7 +310,8 @@ function ReleaseDetail({ release, status, filterPaths, jiraUrl, onTokenRejected 
   const hiddenRepos = repos.filter((repo) => !inFilter(repo.path));
   const rows = repos.filter((repo) => inFilter(repo.path)).map((repo) => ({
     ...repo,
-    include: !LEFT_OUT_BY_DEFAULT.has(repo.state),
+    // Newer tags since this one are only a question for a release that hasn't shipped.
+    include: !LEFT_OUT_BY_DEFAULT.has(repo.state) || (release.released && repo.state === "older_tag"),
     ...edits[repo.path],
   }));
 
@@ -367,7 +370,7 @@ function ReleaseDetail({ release, status, filterPaths, jiraUrl, onTokenRejected 
               <StatusBadge className={JIRA_STATUS_COLORS[issueStatus.status_category] ?? JIRA_STATUS_COLORS.new}>{issueStatus.status}</StatusBadge>
             )}
           </div>
-          {plan && (
+          {plan && rows.length > 0 && (
             <p className="mt-2 text-xs text-gray-600">
               {rows.length} repositor{rows.length !== 1 ? "ies" : "y"}
               {needTag > 0 && <> · <span className="font-medium text-blue-700">{needTag} need{needTag === 1 ? "s" : ""} a tag</span></>}
@@ -420,7 +423,7 @@ function ReleaseDetail({ release, status, filterPaths, jiraUrl, onTokenRejected 
                     </tr>
                   </thead>
                   <tbody>
-                    {rows.map((row) => <RepoRow key={row.path} row={row} onEdit={onEdit} onBuild={setBuilding} />)}
+                    {rows.map((row) => <RepoRow key={row.path} row={row} released={release.released} onEdit={onEdit} onBuild={setBuilding} />)}
                   </tbody>
                 </table>
               </div>
@@ -446,7 +449,7 @@ function ReleaseDetail({ release, status, filterPaths, jiraUrl, onTokenRejected 
                 {hiddenIssueCount} more touch only repositories outside your project filter.
               </p>
             )}
-            <IssueGroup title={`In "${status}"`} issues={inRelease} />
+            <IssueGroup title="In the release" issues={inRelease} />
             <IssueGroup title="Other statuses" note={statusCounts(otherIssues)} issues={otherIssues} />
             {issues.length === 0 && (
               <p className="text-sm text-gray-400 border border-gray-200 rounded-lg bg-white py-8 text-center">No issues to show</p>
@@ -560,7 +563,7 @@ export default function Releases({ jiraUrl, connected, onConnected, projects, se
           </div>
         )}
         {selected && (
-          <ReleaseDetail key={selected.id} release={selected} status={list.status} filterPaths={filterPaths} jiraUrl={jiraUrl} onTokenRejected={setTokenProblem} />
+          <ReleaseDetail key={selected.id} release={selected} filterPaths={filterPaths} jiraUrl={jiraUrl} onTokenRejected={setTokenProblem} />
         )}
       </div>
     </main>

@@ -6,10 +6,11 @@ from urllib.parse import quote
 from fastapi import HTTPException
 
 from . import release_plan
-from .config import JIRA_PROJECT, JIRA_RELEASE_STATUS, JIRA_URL, log
+from .config import JIRA_DONE_STATUSES, JIRA_PROJECT, JIRA_RELEASE_STATUS, JIRA_URL, log
 from .gitlab import GL, gather_settled, why
 from .jira import Jira
 
+_PLANNED_STATUSES = (JIRA_RELEASE_STATUS, *JIRA_DONE_STATUSES)
 _JIRA_CONCURRENCY = 8  # parallel Jira calls while building one plan; GitLab has its own limit in GL
 
 _RELEASE_SOURCE_BRANCH = "develop"
@@ -62,7 +63,7 @@ async def list_releases(jira: Jira) -> dict:
     statuses = await _release_issue_statuses(jira, [r["release_issue"] for r in upcoming if r["release_issue"]])
     for r in releases:
         r["release_issue_status"] = statuses.get(r["release_issue"])
-    return {"project": JIRA_PROJECT, "status": JIRA_RELEASE_STATUS, "releases": upcoming + shipped}
+    return {"project": JIRA_PROJECT, "releases": upcoming + shipped}
 
 
 
@@ -120,7 +121,7 @@ async def _all_tag_names(gl: GL, enc_path: str) -> list[str]:
     return [t["name"] for t in await _all_pages(gl, f"/projects/{enc_path}/repository/tags")]
 
 
-async def _plan_for_repo(gl: GL, path: str, changes: list[dict]) -> dict:
+async def _plan_for_repo(gl: GL, path: str, changes: list[dict], released: bool) -> dict:
     """Plan row for one repo. Closed MRs were never shipped, so they don't count as changes."""
     enc = quote(path, safe="")
     row = {"path": path, "name": path.rsplit("/", 1)[-1], "web_url": f"{gl.url}/{path}", "warnings": []}
@@ -129,7 +130,8 @@ async def _plan_for_repo(gl: GL, path: str, changes: list[dict]) -> dict:
     tags_call, languages_call, *refs_calls = await gather_settled([
         _all_tag_names(gl, enc),
         _json(gl, f"/projects/{enc}/languages"),
-        *[_json(gl, f"/projects/{enc}/repository/commits/{c['sha']}/refs", {"type": "tag", "per_page": 100})
+        # An old commit sits in every later tag, so a repo with many tags needs all the pages to find its first one.
+        *[_all_pages(gl, f"/projects/{enc}/repository/commits/{c['sha']}/refs", {"type": "tag"})
           for c in live if c["sha"]],
     ])
     row["group"] = release_plan.repo_group(row["name"], {} if isinstance(languages_call, Exception) else languages_call)
@@ -158,7 +160,8 @@ async def _plan_for_repo(gl: GL, path: str, changes: list[dict]) -> dict:
             row["warnings"].append(f"{c['ref']} is a commit with no MR and no tag, check it's on the release branch ({issues})")
 
     plan = release_plan.plan_repo(tags_call, containing)
-    if plan["state"] == "older_tag":
+    # In a shipped release that's just history: of course newer tags have come since.
+    if plan["state"] == "older_tag" and not released:
         row["warnings"].append(
             f"Everything is already in {plan['deploy_tag']} and newer tags exist. "
             "Left out of the plan: include it if that tag belongs to this release."
@@ -174,10 +177,10 @@ async def _plan_for_repo(gl: GL, path: str, changes: list[dict]) -> dict:
 
 
 
-async def build_plan(jira: Jira, gl: GL, version_id: int) -> dict:
-    wanted = JIRA_RELEASE_STATUS.casefold()
+async def build_plan(jira: Jira, gl: GL, version_id: int, released: bool = False) -> dict:
+    wanted = {status.casefold() for status in _PLANNED_STATUSES}
     issues = await _version_issues(jira, version_id)
-    in_release = {i["key"] for i in issues if i["fields"]["status"]["name"].casefold() == wanted}
+    in_release = {i["key"] for i in issues if i["fields"]["status"]["name"].casefold() in wanted}
     warnings: list[str] = []
 
     jira_sem = asyncio.Semaphore(_JIRA_CONCURRENCY)
@@ -221,7 +224,7 @@ async def build_plan(jira: Jira, gl: GL, version_id: int) -> dict:
 
     # 4. Tags per repo
     live_repos = {p: list(c.values()) for p, c in repos.items() if any(x["state"] != "closed" for x in c.values())}
-    rows = await gather_settled([_plan_for_repo(gl, p, c) for p, c in live_repos.items()])
+    rows = await gather_settled([_plan_for_repo(gl, p, c, released) for p, c in live_repos.items()])
     plan_rows = []
     for path, row in zip(live_repos, rows):
         if isinstance(row, Exception):
@@ -306,7 +309,7 @@ async def repo_preview(jira: Jira, gl: GL, version_id: int, path: str, tag: str)
         "open_mr": {"iid": mr["iid"], "url": mr["web_url"]} if mr else None,
         "tag_exists": await _exists(gl, _tag_path(enc, tag)),
         "commands": release_plan.manual_commands(_RELEASE_SOURCE_BRANCH, target, head, tag, bool(commits)),
-        **release_plan.summarize_commits(commits, statuses, JIRA_RELEASE_STATUS, JIRA_PROJECT),
+        **release_plan.summarize_commits(commits, statuses, _PLANNED_STATUSES, JIRA_PROJECT),
     }
 
 

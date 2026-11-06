@@ -29,6 +29,7 @@ GraphQL failure that sends the backend down its REST fallback.
 import json
 import re
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ME = {"id": 7, "name": "Dana", "username": "dana", "avatar_url": "http://127.0.0.1:9911/uploads/a.png"}
@@ -71,7 +72,8 @@ DISCUSSIONS = {
     (1, 2): [], (2, 1): [],
 }
 
-NOW_ISH = "2026-08-18T10:00:00Z"
+# Relative to today: the scan only reads the last two weeks, so a fixed date stops counting as recent.
+NOW_ISH = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
 LONG_AGO = "2025-01-05T10:00:00Z"
 
 def branch(name, title, at=NOW_ISH, default=False, protected=False, merged=False):
@@ -287,6 +289,11 @@ class Handler(BaseHTTPRequestHandler):
             mrs = MRS.get(int(m.group(1)), [])
             if "source_branch" in params:
                 mrs = [x for x in mrs if x["source_branch"] == params["source_branch"]]
+            # the real endpoint narrows these server-side, which is why they go to REST
+            if "search" in params:
+                mrs = [x for x in mrs if params["search"].lower() in x["title"].lower()]
+            if params.get("scope") == "created_by_me":
+                mrs = [x for x in mrs if x["author"]["id"] == ME["id"]]
             return self._send(mrs, headers={"X-Total-Pages": "1"})
 
         m = re.match(r"/api/v4/projects/(\d+)/merge_requests/(\d+)/(\w+)$", path)

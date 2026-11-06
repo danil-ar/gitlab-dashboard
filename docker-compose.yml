@@ -20,7 +20,8 @@ services:
       args:
         REGISTRY: ${REGISTRY:-}
     ports:
-      - "8085:80"
+      # Only this machine by default. Set DASHBOARD_BIND=0.0.0.0 in .env to open it to the network.
+      - "${DASHBOARD_BIND:-127.0.0.1}:8085:80"
     depends_on:
       backend:
         condition: service_healthy

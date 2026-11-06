@@ -86,14 +86,14 @@ def plan_repo(tags: list[str], changes: list) -> dict:
     return {"state": state, "latest_tag": latest, "deploy_tag": deploy, "rollback_tag": rollback}
 
 
-def summarize_commits(commits: list[dict], statuses: dict[str, str], wanted_status: str, project: str) -> dict:
+def summarize_commits(commits: list[dict], statuses: dict[str, str], wanted_statuses, project: str) -> dict:
     """Sort what a merge would carry by issue, so nothing unready reaches master unnoticed.
 
     `statuses` maps this release's issues to their status. Only `project` keys count: a commit that
     mentions a related ticket from another tracker isn't that ticket's change. Merge commits with no
     key say nothing about the content, so they aren't reported as commits without an issue.
     """
-    wanted = wanted_status.casefold()
+    wanted = {status.casefold() for status in wanted_statuses}
     ready, foreign, not_ready = set(), set(), {}
     no_key = 0
     for commit in commits:
@@ -104,7 +104,7 @@ def summarize_commits(commits: list[dict], statuses: dict[str, str], wanted_stat
         for key in keys:
             if key not in statuses:
                 foreign.add(key)
-            elif statuses[key].casefold() == wanted:
+            elif statuses[key].casefold() in wanted:
                 ready.add(key)
             else:
                 not_ready[key] = statuses[key]
