@@ -6,6 +6,7 @@ _TAG_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
 _CHANGE_RE = re.compile(
     r"^(?P<path>.+?)/(?:-/)?(?:merge_requests/(?P<iid>\d+)|commit/(?P<sha>[0-9a-f]{7,40}))(?:/.*)?$"
 )
+_ISSUE_KEY_RE = re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b")
 _FRONTEND_NAME_RE = re.compile(r"(^|[-_.])(frontend|front|ui|web)([-_.]|$)", re.IGNORECASE)
 _FRONTEND_LANGUAGES = {"TypeScript", "TSX", "JavaScript", "JSX", "Vue", "Svelte", "HTML", "CSS", "SCSS", "Sass", "Less"}
 
@@ -83,3 +84,68 @@ def plan_repo(tags: list[str], changes: list) -> dict:
 
     rollback = next((t for t in versions[start:] if t not in introduced), None)
     return {"state": state, "latest_tag": latest, "deploy_tag": deploy, "rollback_tag": rollback}
+
+
+def summarize_commits(commits: list[dict], statuses: dict[str, str], wanted_status: str, project: str) -> dict:
+    """Sort what a merge would carry by issue, so nothing unready reaches master unnoticed.
+
+    `statuses` maps this release's issues to their status. Only `project` keys count: a commit that
+    mentions a related ticket from another tracker isn't that ticket's change. Merge commits with no
+    key say nothing about the content, so they aren't reported as commits without an issue.
+    """
+    wanted = wanted_status.casefold()
+    ready, foreign, not_ready = set(), set(), {}
+    no_key = 0
+    for commit in commits:
+        text = f"{commit.get('title') or ''}\n{commit.get('message') or ''}"
+        keys = {key for key in _ISSUE_KEY_RE.findall(text) if key.startswith(f"{project}-")}
+        if not keys and len(commit.get("parent_ids") or []) <= 1:
+            no_key += 1
+        for key in keys:
+            if key not in statuses:
+                foreign.add(key)
+            elif statuses[key].casefold() == wanted:
+                ready.add(key)
+            else:
+                not_ready[key] = statuses[key]
+    return {
+        "ready": sorted(ready),
+        "not_ready": [{"key": key, "status": not_ready[key]} for key in sorted(not_ready)],
+        "foreign": sorted(foreign),
+        "no_key": no_key,
+    }
+
+
+_MERGE_BLOCKS = {
+    "not_approved": "The merge request needs approval",
+    "ci_must_pass": "The pipeline has to pass first",
+    "ci_still_running": "The pipeline is still running",
+    "conflict": "The branches have conflicts",
+    "cannot_be_merged": "The branches have conflicts",
+    "need_rebase": "The merge request needs a rebase",
+    "discussions_not_resolved": "The merge request has unresolved threads",
+    "draft_status": "The merge request is a draft",
+    "requested_changes": "A reviewer requested changes",
+    "blocked_status": "The merge request is blocked by another one",
+}
+MERGE_STATUS_OK = {"mergeable", "can_be_merged"}
+MERGE_STATUS_PENDING = {"checking", "unchecked", "preparing", "cannot_be_merged_recheck", "approvals_syncing"}
+
+
+def merge_block_reason(status: str | None) -> str:
+    return _MERGE_BLOCKS.get(status, f"GitLab won't merge it yet ({status})")
+
+
+def manual_commands(source: str, target: str, source_sha: str, tag: str, ahead: bool) -> list[str]:
+    """Git commands with the same result as the Build tag button, for doing it by hand.
+
+    Merging the previewed commit rather than the branch name means what was reviewed is what ships,
+    even if the branch moves in between. No comment lines: pasted into zsh, a # line is an error.
+    """
+    commands = ["git fetch origin --tags", f"git checkout {target}", f"git pull --ff-only origin {target}"]
+    if ahead:
+        commands += [
+            f'git merge --no-ff {source_sha} -m "Release {tag}: {source} into {target}"',
+            f"git push origin {target}",
+        ]
+    return commands + [f"git tag {tag}", f"git push origin {tag}"]

@@ -49,6 +49,11 @@ _pipeline_cache:    dict[tuple, tuple[float, dict | None]] = {}
 
 _PLAN_CONCURRENCY = 8  # parallel calls per service while building one release plan
 
+_RELEASE_SOURCE_BRANCH = "develop"
+_RELEASE_TARGET_BRANCHES = ("master", "main")  # the first one that exists
+_MERGE_CHECK_ATTEMPTS = 8  # GitLab works out mergeability in the background after an MR is created
+_MERGE_CHECK_DELAY = 1  # seconds
+
 
 def _cache_get(store: dict, key: tuple):
     entry = store.get(key)
@@ -165,8 +170,11 @@ class GL:
     async def get(self, path: str, params: dict | None = None) -> httpx.Response:
         return await self._request("GET", path, params)
 
-    async def post(self, path: str) -> httpx.Response:
-        return await self._request("POST", path)
+    async def post(self, path: str, params: dict | None = None) -> httpx.Response:
+        return await self._request("POST", path, params)
+
+    async def put(self, path: str, params: dict | None = None) -> httpx.Response:
+        return await self._request("PUT", path, params)
 
 
 class Jira:
@@ -249,6 +257,12 @@ class JiraConnectBody(BaseModel):
 class MRRef(BaseModel):
     project_id: int
     iid: int
+
+
+class BuildTagBody(BaseModel):
+    path: str
+    tag: str
+    source_sha: str
 
 
 # ─── auth endpoints ───────────────────────────────────────────────────────────
@@ -833,16 +847,20 @@ def _change_from_link(gl: GL, link: dict, mrs: dict) -> dict:
     return {**change, "title": mr.get("title"), "state": mr.get("state"), "sha": sha}
 
 
-async def _all_tag_names(gl: GL, sem: asyncio.Semaphore, enc_path: str) -> list[str]:
-    """Every tag in the repo, read from GitLab: a page full of CI tags must not hide the latest release tag."""
-    names: list[str] = []
+async def _all_pages(gl: GL, sem: asyncio.Semaphore, path: str, params: dict | None = None) -> list:
+    items: list = []
     page = "1"
     while page:
         async with sem:
-            r = await gl.get(f"/projects/{enc_path}/repository/tags", {"per_page": 100, "page": page})
-        names += [t["name"] for t in r.json()]
+            r = await gl.get(path, {**(params or {}), "per_page": 100, "page": page})
+        items += r.json()
         page = r.headers.get("X-Next-Page")
-    return names
+    return items
+
+
+async def _all_tag_names(gl: GL, sem: asyncio.Semaphore, enc_path: str) -> list[str]:
+    """Every tag in the repo, read from GitLab: a page full of CI tags must not hide the latest release tag."""
+    return [t["name"] for t in await _all_pages(gl, sem, f"/projects/{enc_path}/repository/tags")]
 
 
 async def _plan_for_repo(gl: GL, gl_sem: asyncio.Semaphore, fetch, path: str, changes: list[dict]) -> dict:
@@ -978,3 +996,151 @@ async def jira_release_plan(version_id: int, jira: Jira = Depends(get_jira), gl:
         "repos":          plan_rows,
         "warnings":       warnings,
     }
+
+
+# ─── building a release tag ───────────────────────────────────────────────────
+
+async def _exists(gl: GL, path: str) -> bool:
+    try:
+        await gl.get(path)
+        return True
+    except HTTPException as e:
+        if e.status_code == 404:
+            return False
+        raise
+
+
+async def _release_target_branch(gl: GL, enc: str) -> str:
+    for name in _RELEASE_TARGET_BRANCHES:
+        if await _exists(gl, f"/projects/{enc}/repository/branches/{name}"):
+            return name
+    raise HTTPException(status_code=404, detail=f"The repo has no {' or '.join(_RELEASE_TARGET_BRANCHES)} branch")
+
+
+async def _source_head(gl: GL, enc: str) -> str:
+    r = await gl.get(f"/projects/{enc}/repository/branches/{_RELEASE_SOURCE_BRANCH}")
+    return r.json()["commit"]["id"]
+
+
+async def _commits_ahead(gl: GL, enc: str, target: str) -> list[dict]:
+    range_ = f"{target}..{_RELEASE_SOURCE_BRANCH}"
+    return await _all_pages(gl, asyncio.Semaphore(1), f"/projects/{enc}/repository/commits", {"ref_name": range_})
+
+
+async def _open_release_mr(gl: GL, enc: str, target: str) -> dict | None:
+    r = await gl.get(f"/projects/{enc}/merge_requests", {
+        "state": "opened", "source_branch": _RELEASE_SOURCE_BRANCH, "target_branch": target, "per_page": 1,
+    })
+    mrs = r.json()
+    return mrs[0] if mrs else None
+
+
+def _tag_path(enc: str, tag: str) -> str:
+    return f"/projects/{enc}/repository/tags/{quote(tag, safe='')}"
+
+
+@app.get("/api/jira/releases/{version_id}/repo-preview")
+async def release_repo_preview(
+    version_id: int,
+    path: str = Query(...),
+    tag: str = Query(...),
+    jira: Jira = Depends(get_jira),
+    gl: GL = Depends(get_gl),
+):
+    """What building this tag would do, and everything that would reach the target branch with it."""
+    if not release_plan.parse_tag(tag):
+        raise HTTPException(status_code=400, detail="The tag must look like vX.Y.Z")
+    enc = quote(path, safe="")
+    target = await _release_target_branch(gl, enc)
+    head = await _source_head(gl, enc)
+    commits = await _commits_ahead(gl, enc, target)
+    mr = await _open_release_mr(gl, enc, target)
+    statuses = {i["key"]: i["fields"]["status"]["name"] for i in await _version_issues(jira, version_id)}
+    return {
+        "source": _RELEASE_SOURCE_BRANCH,
+        "target": target,
+        "source_sha": head,
+        "ahead": len(commits),
+        "open_mr": {"iid": mr["iid"], "url": mr["web_url"]} if mr else None,
+        "tag_exists": await _exists(gl, _tag_path(enc, tag)),
+        "commands": release_plan.manual_commands(_RELEASE_SOURCE_BRANCH, target, head, tag, bool(commits)),
+        **release_plan.summarize_commits(commits, statuses, _JIRA_RELEASE_STATUS, _JIRA_PROJECT),
+    }
+
+
+def _write_refused(e: HTTPException) -> str:
+    # GitLab answers 401 here for "not allowed", with a valid token. The reason goes back in a normal
+    # response: passed through as 401 it would read as a dead session and sign the user out.
+    return "GitLab refused: you don't have permission" if e.status_code == 401 else e.detail
+
+
+async def _merge_release_mr(gl: GL, enc: str, target: str, tag: str, sha: str) -> dict:
+    """Merge the source branch through an MR. Returns {"merged_sha"} or {"blocked", "mr_url"}."""
+    mr = await _open_release_mr(gl, enc, target)
+    if not mr:
+        try:
+            mr = (await gl.post(f"/projects/{enc}/merge_requests", {
+                "source_branch": _RELEASE_SOURCE_BRANCH,
+                "target_branch": target,
+                "title": f"Release {tag}: {_RELEASE_SOURCE_BRANCH} into {target}",
+                "remove_source_branch": False,
+                "squash": False,
+            })).json()
+        except HTTPException as e:
+            return {"blocked": f"Could not create the merge request: {_write_refused(e)}", "mr_url": None}
+
+    mr_path = f"/projects/{enc}/merge_requests/{mr['iid']}"
+    status = None
+    for attempt in range(_MERGE_CHECK_ATTEMPTS):
+        current = (await gl.get(mr_path)).json()
+        status = current.get("detailed_merge_status") or current.get("merge_status")
+        if status not in release_plan.MERGE_STATUS_PENDING:
+            break
+        await asyncio.sleep(_MERGE_CHECK_DELAY)
+    if status not in release_plan.MERGE_STATUS_OK:
+        return {"blocked": release_plan.merge_block_reason(status), "mr_url": mr["web_url"]}
+
+    try:
+        # sha: refuse if the branch moved after the preview. The other two keep develop in place whatever
+        # the project defaults are, and keep its commits, so later releases can see which tag holds them.
+        merged = (await gl.put(f"{mr_path}/merge", {
+            "sha": sha, "should_remove_source_branch": False, "squash": False,
+        })).json()
+    except HTTPException as e:
+        return {"blocked": f"GitLab did not merge it: {_write_refused(e)}", "mr_url": mr["web_url"]}
+    return {"merged_sha": merged.get("merge_commit_sha") or merged.get("sha"), "mr_url": mr["web_url"]}
+
+
+@app.post("/api/releases/build-tag")
+async def build_release_tag(body: BuildTagBody, gl: GL = Depends(get_gl)):
+    """Merge develop into master and tag the result. Safe to repeat: each step is skipped once it's done."""
+    if not release_plan.parse_tag(body.tag):
+        raise HTTPException(status_code=400, detail="The tag must look like vX.Y.Z")
+    enc = quote(body.path, safe="")
+    repo_url = f"{gl.url}/{body.path}"
+    done = {
+        "status": "done",
+        "tag": body.tag,
+        "tag_url": f"{repo_url}/-/tags/{quote(body.tag, safe='')}",
+        "pipelines_url": f"{repo_url}/-/pipelines?ref={quote(body.tag, safe='')}",
+    }
+    if await _exists(gl, _tag_path(enc, body.tag)):
+        return done
+
+    target = await _release_target_branch(gl, enc)
+    ref = target
+    mr_url = None
+    if await _commits_ahead(gl, enc, target):
+        if await _source_head(gl, enc) != body.source_sha:
+            return {"status": "changed"}
+        merge = await _merge_release_mr(gl, enc, target, body.tag, body.source_sha)
+        mr_url = merge["mr_url"]
+        if "blocked" in merge:
+            return {"status": "blocked", "reason": merge["blocked"], "mr_url": mr_url, "merged": False}
+        ref = merge["merged_sha"] or target
+
+    try:
+        await gl.post(f"/projects/{enc}/repository/tags", {"tag_name": body.tag, "ref": ref})
+    except HTTPException as e:
+        return {"status": "blocked", "reason": f"Could not create the tag: {_write_refused(e)}", "mr_url": mr_url, "merged": ref != target}
+    return {**done, "mr_url": mr_url}

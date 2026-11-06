@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import Banner from "../components/Banner";
+import BuildTagDialog from "../components/BuildTagDialog";
+import CopyBlock from "../components/CopyBlock";
 import { Icon, IconSpin } from "../components/icons";
 
 const STATE_BADGES = {
@@ -12,6 +14,8 @@ const STATE_BADGES = {
 };
 
 const LEFT_OUT_BY_DEFAULT = new Set(["older_tag", "no_tags", "error"]);
+const BUILDABLE_STATES = new Set(["new_tag", "no_tags"]);
+const VERSION_TAG = /^v?\d+\.\d+\.\d+$/;
 
 const CHANGE_STATE_COLORS = {
   merged:  "text-green-700",
@@ -94,49 +98,10 @@ function JiraConnect({ jiraUrl, reason, onConnect }) {
 
 // ─── plan ────────────────────────────────────────────────────────────────────
 
-function PlanBlock({ title, text }) {
-  const [copied, setCopied] = useState(false);
-  const textareaRef = useRef(null);
-
-  const copy = async () => {
-    // navigator.clipboard exists only on HTTPS and localhost; the dashboard may run on plain HTTP.
-    if (navigator.clipboard) {
-      await navigator.clipboard.writeText(text);
-    } else {
-      textareaRef.current.select();
-      document.execCommand("copy");
-    }
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  return (
-    <div className="min-w-0">
-      <div className="flex items-center justify-between mb-1.5">
-        <h3 className="text-xs font-semibold text-gray-700">{title}</h3>
-        <button
-          onClick={copy}
-          disabled={!text}
-          className="text-xs px-2 py-1 rounded border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 disabled:opacity-40"
-        >
-          {copied ? "✓ Copied" : "Copy"}
-        </button>
-      </div>
-      <textarea
-        ref={textareaRef}
-        readOnly
-        value={text}
-        rows={Math.max(3, text.split("\n").length)}
-        placeholder="Nothing to do"
-        className="w-full font-mono text-[11px] leading-relaxed border border-gray-200 rounded-md p-2 bg-gray-50 text-gray-700 resize-none whitespace-pre overflow-x-auto focus:outline-none"
-      />
-    </div>
-  );
-}
-
-function RepoRow({ row, onEdit }) {
+function RepoRow({ row, onEdit, onBuild }) {
   const badge = STATE_BADGES[row.state];
   const disabled = row.state === "error";
+  const canBuild = row.include && BUILDABLE_STATES.has(row.state) && VERSION_TAG.test(row.deploy_tag ?? "");
   return (
     <>
       <tr className="border-t border-gray-100 align-top">
@@ -189,6 +154,14 @@ function RepoRow({ row, onEdit }) {
           <span title={badge.title} className={`text-[11px] font-medium px-1.5 py-0.5 rounded whitespace-nowrap ${badge.className}`}>
             {badge.label}
           </span>
+          {canBuild && (
+            <button
+              onClick={() => onBuild(row)}
+              className="block mt-1.5 text-xs px-2 py-1 rounded border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 whitespace-nowrap"
+            >
+              Build tag
+            </button>
+          )}
         </td>
       </tr>
       {(row.error || row.warnings.length > 0) && (
@@ -229,19 +202,26 @@ function IssueRow({ issue }) {
   );
 }
 
-function ReleaseDetail({ release, status, filterPaths, onTokenRejected }) {
+function ReleaseDetail({ release, status, filterPaths, jiraUrl, onTokenRejected }) {
   const [plan, setPlan]       = useState(null);
   const [error, setError]     = useState(null);
   const [loading, setLoading] = useState(true);
   const [edits, setEdits]     = useState({});
   const [attempt, setAttempt] = useState(0);
+  const [building, setBuilding] = useState(null);
+  const keepEditsRef = useRef(false);
 
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
     setError(null);
     api.get(`/api/jira/releases/${release.id}/plan`, { signal: controller.signal })
-      .then((p) => { setPlan(p); setEdits({}); setLoading(false); })
+      .then((p) => {
+        setPlan(p);
+        if (!keepEditsRef.current) setEdits({});
+        keepEditsRef.current = false;
+        setLoading(false);
+      })
       .catch((e) => {
         if (e.name === "AbortError") return;
         if (e.status === 403) onTokenRejected(e.message);
@@ -272,8 +252,23 @@ function ReleaseDetail({ release, status, filterPaths, onTokenRejected }) {
 
   const rebuild = () => setAttempt((n) => n + 1);
 
+  // After a tag is built only that repo changes, so the hand edits on the other rows stay.
+  const closeBuild = (built) => {
+    if (built) {
+      keepEditsRef.current = true;
+      const path = building.path;
+      setEdits(({ [path]: _built, ...rest }) => rest);
+      rebuild();
+    }
+    setBuilding(null);
+  };
+
   return (
     <div className="p-6 space-y-5 max-w-5xl">
+      {building && (
+        <BuildTagDialog row={building} versionId={release.id} jiraUrl={jiraUrl} onClose={closeBuild} />
+      )}
+
       <div className="flex items-start gap-3">
         <div className="min-w-0">
           <h2 className="text-base font-semibold text-gray-900">
@@ -331,7 +326,7 @@ function ReleaseDetail({ release, status, filterPaths, onTokenRejected }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {rows.map((row) => <RepoRow key={row.path} row={row} onEdit={onEdit} />)}
+                    {rows.map((row) => <RepoRow key={row.path} row={row} onEdit={onEdit} onBuild={setBuilding} />)}
                   </tbody>
                 </table>
               </div>
@@ -345,8 +340,8 @@ function ReleaseDetail({ release, status, filterPaths, onTokenRejected }) {
 
           {rows.length > 0 && (
             <section className="grid md:grid-cols-2 gap-4">
-              <PlanBlock title="Deploy plan" text={planText(rows, "deploy_tag")} />
-              <PlanBlock title="Rollback plan" text={planText(rows, "rollback_tag")} />
+              <CopyBlock title="Deploy plan" text={planText(rows, "deploy_tag")} />
+              <CopyBlock title="Rollback plan" text={planText(rows, "rollback_tag")} />
             </section>
           )}
 
@@ -469,7 +464,7 @@ export default function Releases({ jiraUrl, connected, onConnected, projects, se
           </div>
         )}
         {selected && (
-          <ReleaseDetail key={selected.id} release={selected} status={list.status} filterPaths={filterPaths} onTokenRejected={setTokenProblem} />
+          <ReleaseDetail key={selected.id} release={selected} status={list.status} filterPaths={filterPaths} jiraUrl={jiraUrl} onTokenRejected={setTokenProblem} />
         )}
       </div>
     </main>

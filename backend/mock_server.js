@@ -187,6 +187,35 @@ const server = http.createServer((req, res) => {
   if (path.match(/^\/api\/todos\/\d+\/done$/) && req.method === "POST")
     return send(res, { ok: true });
 
+  if (path.match(/^\/api\/jira\/releases\/\d+\/repo-preview$/))
+    return send(res, {
+      source: "develop", target: "master", source_sha: "d0d0d0d0", ahead: 5, open_mr: null, tag_exists: false,
+      commands: [
+        "git fetch origin --tags",
+        "git checkout master",
+        "git pull --ff-only origin master",
+        `git merge --no-ff d0d0d0d0 -m "Release ${url.searchParams.get("tag")}: develop into master"`,
+        "git push origin master",
+        `git tag ${url.searchParams.get("tag")}`,
+        `git push origin ${url.searchParams.get("tag")}`,
+      ],
+      ready: ["DEMO-101", "DEMO-103"], not_ready: [{ key: "DEMO-106", status: "Testing" }], foreign: ["DEMO-999"], no_key: 1,
+    });
+  if (path === "/api/releases/build-tag" && req.method === "POST") {
+    let raw = "";
+    req.on("data", (chunk) => { raw += chunk; });
+    req.on("end", () => {
+      const { path: repoPath, tag } = JSON.parse(raw);
+      if (repoPath.endsWith("lk-web"))
+        return send(res, { status: "blocked", reason: "The merge request needs approval", merged: false, mr_url: `${GITLAB}/${repoPath}/-/merge_requests/90` });
+      send(res, {
+        status: "done", tag, mr_url: `${GITLAB}/${repoPath}/-/merge_requests/91`,
+        tag_url: `${GITLAB}/${repoPath}/-/tags/${tag}`, pipelines_url: `${GITLAB}/${repoPath}/-/pipelines?ref=${tag}`,
+      });
+    });
+    return;
+  }
+
   if (path === "/api/jira/connect" && req.method === "POST") {
     jiraConnected = true;
     return send(res, { ok: true });
