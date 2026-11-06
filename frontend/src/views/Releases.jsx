@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import Banner from "../components/Banner";
 import BuildTagDialog from "../components/BuildTagDialog";
@@ -38,7 +38,8 @@ const OTHER_STATUS_ORDER = { indeterminate: 0, new: 1, done: 2 };
 
 const SECTION_TITLE = "text-xs font-semibold uppercase tracking-wider text-gray-500";
 const INPUT = "text-sm border border-gray-200 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500";
-const TAG_INPUT = "font-mono text-xs w-20 border border-gray-200 rounded px-1.5 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400";
+const TAG_EDITED = "border-amber-400 bg-amber-50";
+const TAG_INPUT = "font-mono text-xs w-20 border rounded px-1.5 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400";
 
 function formatDate(iso) {
   return iso ? iso.split("-").reverse().join(".") : "no date";
@@ -140,7 +141,9 @@ function StatusBadge({ className, title, children }) {
   );
 }
 
-function RepoRow({ row, released, onEdit, onBuild }) {
+function RepoRow({ row, released, onEdit, onReset, onBuild }) {
+  const inputClass = (field) => `${TAG_INPUT} ${(row[field] ?? "") !== (row.suggested[field] ?? "") ? TAG_EDITED : "border-gray-200"}`;
+  const edited = (row.rollback_tag ?? "") !== (row.suggested.rollback_tag ?? "") || (row.deploy_tag ?? "") !== (row.suggested.deploy_tag ?? "");
   const badge = STATE_BADGES[released && TAGGED_STATES.has(row.state) ? "shipped" : row.state];
   const disabled = row.state === "error";
   const canBuild = !released && row.include && BUILDABLE_STATES.has(row.state) && VERSION_TAG.test(row.deploy_tag ?? "");
@@ -183,7 +186,7 @@ function RepoRow({ row, released, onEdit, onBuild }) {
             value={row.rollback_tag ?? ""}
             disabled={disabled}
             onChange={(e) => onEdit(row.path, { rollback_tag: e.target.value })}
-            className={TAG_INPUT}
+            className={inputClass("rollback_tag")}
           />
           <span className="mx-1.5 text-gray-300" aria-hidden="true">→</span>
           <input
@@ -191,8 +194,13 @@ function RepoRow({ row, released, onEdit, onBuild }) {
             value={row.deploy_tag ?? ""}
             disabled={disabled}
             onChange={(e) => onEdit(row.path, { deploy_tag: e.target.value })}
-            className={TAG_INPUT}
+            className={inputClass("deploy_tag")}
           />
+          {edited && (
+            <button onClick={() => onReset(row.path)} title="Back to the tags worked out from GitLab" className="ml-1.5 text-[11px] text-blue-600 hover:underline">
+              reset
+            </button>
+          )}
         </td>
         <td className="px-3 py-2.5">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
@@ -208,11 +216,17 @@ function RepoRow({ row, released, onEdit, onBuild }) {
           </div>
         </td>
       </tr>
-      {(row.error || row.warnings.length > 0) && (
+      {(row.error || row.warnings.length > 0 || row.unmerged.length > 0) && (
         <tr className={row.include ? "" : "opacity-60"}>
           <td />
           <td colSpan={3} className="px-3 pb-2.5 text-[11px] text-amber-700 space-y-0.5">
             {row.error && <div className="text-red-600">{row.error}</div>}
+            {row.unmerged.map(({ ref, url, issues }) => (
+              <div key={ref}>
+                <a href={url} target="_blank" rel="noopener noreferrer" className="font-mono underline underline-offset-2">{ref}</a>
+                {" is not merged yet"}{issues.length > 0 && ` (${issues.join(", ")})`}
+              </div>
+            ))}
             {row.warnings.map((w) => <div key={w}>{w}</div>)}
           </td>
         </tr>
@@ -280,7 +294,6 @@ function ReleaseDetail({ release, filterPaths, jiraUrl, onTokenRejected }) {
   const [edits, setEdits]     = useState({});
   const [attempt, setAttempt] = useState(0);
   const [building, setBuilding] = useState(null);
-  const keepEditsRef = useRef(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -289,8 +302,6 @@ function ReleaseDetail({ release, filterPaths, jiraUrl, onTokenRejected }) {
     api.get(`/api/jira/releases/${release.id}/plan${release.released ? "?released=true" : ""}`, { signal: controller.signal })
       .then((p) => {
         setPlan(p);
-        if (!keepEditsRef.current) setEdits({});
-        keepEditsRef.current = false;
         setLoading(false);
       })
       .catch((e) => {
@@ -303,6 +314,7 @@ function ReleaseDetail({ release, filterPaths, jiraUrl, onTokenRejected }) {
   }, [release.id, release.released, attempt, onTokenRejected]);
 
   const onEdit = (path, patch) => setEdits((prev) => ({ ...prev, [path]: { ...prev[path], ...patch } }));
+  const onReset = (path) => setEdits(({ [path]: _dropped, ...rest }) => rest);
 
   const inFilter = (path) => !filterPaths || filterPaths.has(path.toLowerCase());
 
@@ -312,6 +324,7 @@ function ReleaseDetail({ release, filterPaths, jiraUrl, onTokenRejected }) {
     ...repo,
     // Newer tags since this one are only a question for a release that hasn't shipped.
     include: !LEFT_OUT_BY_DEFAULT.has(repo.state) || (release.released && repo.state === "older_tag"),
+    suggested: { rollback_tag: repo.rollback_tag, deploy_tag: repo.deploy_tag },
     ...edits[repo.path],
   }));
 
@@ -330,21 +343,19 @@ function ReleaseDetail({ release, filterPaths, jiraUrl, onTokenRejected }) {
 
   const planned = rows.filter((row) => row.include);
   const needTag = planned.filter((row) => row.state === "new_tag").length;
-  const toCheck = rows.reduce((n, row) => n + row.warnings.length + (row.error ? 1 : 0), 0)
+  const toCheck = rows.reduce((n, row) => n + row.warnings.length + row.unmerged.length + (row.error ? 1 : 0), 0)
     + inRelease.filter((issue) => issue.links.length === 0).length;
   const timing = releaseTiming(release);
   const date = dateIfNotInName(release);
   const issueStatus = release.release_issue_status;
 
-  const rebuild = () => setAttempt((n) => n + 1);
+  const reload = () => setAttempt((n) => n + 1);
 
-  // After a tag is built only that repo changes, so the hand edits on the other rows stay.
+  // Once a tag is built the plan knows it, so a tag typed for that repo has nothing left to say.
   const closeBuild = (built) => {
     if (built) {
-      keepEditsRef.current = true;
-      const path = building.path;
-      setEdits(({ [path]: _built, ...rest }) => rest);
-      rebuild();
+      onReset(building.path);
+      reload();
     }
     setBuilding(null);
   };
@@ -380,16 +391,17 @@ function ReleaseDetail({ release, filterPaths, jiraUrl, onTokenRejected }) {
           )}
         </div>
         <button
-          onClick={rebuild}
+          onClick={reload}
           disabled={loading}
+          title="Read the plan from Jira and GitLab again. Tags you typed stay."
           className="ml-auto shrink-0 flex items-center gap-1.5 text-sm px-3 py-1.5 border border-gray-200 rounded-md bg-white hover:bg-gray-50 text-gray-700 disabled:opacity-50"
         >
           {loading ? <IconSpin className="w-3.5 h-3.5" /> : <Icon name="refresh" />}
-          Rebuild
+          Refresh
         </button>
       </div>
 
-      {error && <Banner onRetry={rebuild}>{error}</Banner>}
+      {error && <Banner onRetry={reload}>{error}</Banner>}
 
       {loading && !plan && (
         <div className="flex items-center gap-2 text-sm text-gray-400 py-10 justify-center">
@@ -423,7 +435,7 @@ function ReleaseDetail({ release, filterPaths, jiraUrl, onTokenRejected }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {rows.map((row) => <RepoRow key={row.path} row={row} released={release.released} onEdit={onEdit} onBuild={setBuilding} />)}
+                    {rows.map((row) => <RepoRow key={row.path} row={row} released={release.released} onEdit={onEdit} onReset={onReset} onBuild={setBuilding} />)}
                   </tbody>
                 </table>
               </div>

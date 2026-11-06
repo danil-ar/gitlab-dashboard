@@ -86,20 +86,42 @@ def plan_repo(tags: list[str], changes: list) -> dict:
     return {"state": state, "latest_tag": latest, "deploy_tag": deploy, "rollback_tag": rollback}
 
 
+def _issue_keys(commit: dict, project: str) -> set[str]:
+    """Only `project` keys count: a commit that mentions a related ticket from another tracker isn't that ticket's change."""
+    text = f"{commit.get('title') or ''}\n{commit.get('message') or ''}"
+    return {key for key in _ISSUE_KEY_RE.findall(text) if key.startswith(f"{project}-")}
+
+
+def _is_merge(commit: dict) -> bool:
+    return len(commit.get("parent_ids") or []) > 1
+
+
+def describe_commits(commits: list[dict], project: str) -> list[dict]:
+    """What a merge would carry, for reading. Merge commits are left out: they say nothing about the content."""
+    return [
+        {
+            "short_id": c.get("short_id") or (c.get("id") or "")[:8],
+            "title": c.get("title"),
+            "author": c.get("author_name"),
+            "url": c.get("web_url"),
+            "issues": sorted(_issue_keys(c, project)),
+        }
+        for c in commits if not _is_merge(c)
+    ]
+
+
 def summarize_commits(commits: list[dict], statuses: dict[str, str], wanted_statuses, project: str) -> dict:
     """Sort what a merge would carry by issue, so nothing unready reaches master unnoticed.
 
-    `statuses` maps this release's issues to their status. Only `project` keys count: a commit that
-    mentions a related ticket from another tracker isn't that ticket's change. Merge commits with no
-    key say nothing about the content, so they aren't reported as commits without an issue.
+    `statuses` maps this release's issues to their status. Merge commits with no key say nothing
+    about the content, so they aren't reported as commits without an issue.
     """
     wanted = {status.casefold() for status in wanted_statuses}
     ready, foreign, not_ready = set(), set(), {}
     no_key = 0
     for commit in commits:
-        text = f"{commit.get('title') or ''}\n{commit.get('message') or ''}"
-        keys = {key for key in _ISSUE_KEY_RE.findall(text) if key.startswith(f"{project}-")}
-        if not keys and len(commit.get("parent_ids") or []) <= 1:
+        keys = _issue_keys(commit, project)
+        if not keys and not _is_merge(commit):
             no_key += 1
         for key in keys:
             if key not in statuses:

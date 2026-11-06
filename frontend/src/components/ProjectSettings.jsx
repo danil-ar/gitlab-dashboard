@@ -1,3 +1,4 @@
+import Modal from "./Modal";
 import { useState, useMemo } from "react";
 import { loadSelectedProjects, saveSelectedProjects } from "../utils/storage";
 
@@ -70,86 +71,84 @@ export default function ProjectSettings({ projects, profileId, onClose }) {
   });
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-lg mx-4 flex flex-col max-h-[80vh]" onClick={(e) => e.stopPropagation()}>
+    <Modal label="Project filter" onClose={onClose} className="bg-white rounded-xl shadow-xl w-full max-w-lg mx-4 flex flex-col max-h-[80vh]">
 
-        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
-          <h2 className="text-sm font-semibold text-gray-900">Project filter</h2>
-          <div className="flex items-center gap-3">
-            {selected.size > 0 && (
-              <button onClick={clearAll} className="text-xs text-gray-400 hover:text-gray-600">
-                Clear all ({selected.size})
-              </button>
-            )}
-            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
-          </div>
-        </div>
-
-        <div className="px-5 py-3 border-b border-gray-100">
-          <input
-            autoFocus type="text" placeholder="Filter projects…"
-            value={search} onChange={(e) => setSearch(e.target.value)}
-            className="w-full text-sm border border-gray-200 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-        </div>
-
-        <div className="px-5 py-2 border-b border-gray-100 flex items-center gap-2">
-          <input type="checkbox" id="toggle-all" checked={allFilteredSelected} onChange={toggleAll} className="rounded" />
-          <label htmlFor="toggle-all" className="text-xs text-gray-500 cursor-pointer select-none">
-            {allFilteredSelected ? "Deselect all" : "Select all"} ({filtered.length})
-          </label>
-          {selected.size === 0 && (
-            <span className="ml-auto text-xs text-gray-400">No selection = show all</span>
+      <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+        <h2 className="text-sm font-semibold text-gray-900">Project filter</h2>
+        <div className="flex items-center gap-3">
+          {selected.size > 0 && (
+            <button onClick={clearAll} className="text-xs text-gray-400 hover:text-gray-600">
+              Clear all ({selected.size})
+            </button>
           )}
-        </div>
-
-        <div className="overflow-y-auto flex-1 py-2">
-          {filtered.length === 0 ? (
-            <p className="text-center py-8 text-sm text-gray-400">No projects found</p>
-          ) : groups.map(({ ns, projects: gps }) => {
-            const groupSelected = gps.filter((p) => selected.has(p.id)).length;
-            const allGroupSelected = groupSelected === gps.length;
-            const someGroupSelected = groupSelected > 0 && !allGroupSelected;
-
-            return (
-              <div key={ns}>
-                {/* group header */}
-                <div className="flex items-center gap-2 px-4 py-1.5 bg-gray-50 border-y border-gray-100 sticky top-0">
-                  <input
-                    type="checkbox"
-                    checked={allGroupSelected}
-                    ref={(el) => { if (el) el.indeterminate = someGroupSelected; }}
-                    onChange={() => toggleGroup(gps)}
-                    className="rounded shrink-0"
-                  />
-                  <span
-                    className="text-xs font-semibold text-gray-500 cursor-pointer select-none flex-1"
-                    onClick={() => toggleGroup(gps)}
-                  >
-                    {ns}
-                  </span>
-                  <span className="text-[11px] text-gray-400 tabular-nums">
-                    {groupSelected}/{gps.length}
-                  </span>
-                </div>
-
-                {/* projects in group */}
-                {gps.map((p) => (
-                  <label key={p.id} className="flex items-center gap-3 px-4 pl-8 py-2 hover:bg-gray-50 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={selected.has(p.id)}
-                      onChange={() => toggle(p.id)}
-                      className="rounded shrink-0"
-                    />
-                    <span className="text-sm text-gray-700 truncate">{projectName(p)}</span>
-                  </label>
-                ))}
-              </div>
-            );
-          })}
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
         </div>
       </div>
-    </div>
+
+      <div className="px-5 py-3 border-b border-gray-100">
+        <input
+          autoFocus type="text" placeholder="Filter projects…"
+          value={search} onChange={(e) => setSearch(e.target.value)}
+          className="w-full text-sm border border-gray-200 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+      </div>
+
+      <div className="px-5 py-2 border-b border-gray-100 flex items-center gap-2">
+        <input type="checkbox" id="toggle-all" checked={allFilteredSelected} onChange={toggleAll} className="rounded" />
+        <label htmlFor="toggle-all" className="text-xs text-gray-500 cursor-pointer select-none">
+          {allFilteredSelected ? "Deselect all" : "Select all"} ({filtered.length})
+        </label>
+        {selected.size === 0 && (
+          <span className="ml-auto text-xs text-gray-400">No selection = show all</span>
+        )}
+      </div>
+
+      <div className="overflow-y-auto flex-1 py-2">
+        {filtered.length === 0 ? (
+          <p className="text-center py-8 text-sm text-gray-400">No projects found</p>
+        ) : groups.map(({ ns, projects: gps }) => {
+          const groupSelected = gps.filter((p) => selected.has(p.id)).length;
+          const allGroupSelected = groupSelected === gps.length;
+          const someGroupSelected = groupSelected > 0 && !allGroupSelected;
+
+          return (
+            <div key={ns}>
+              {/* group header */}
+              <div className="flex items-center gap-2 px-4 py-1.5 bg-gray-50 border-y border-gray-100 sticky top-0">
+                <input
+                  type="checkbox"
+                  checked={allGroupSelected}
+                  ref={(el) => { if (el) el.indeterminate = someGroupSelected; }}
+                  onChange={() => toggleGroup(gps)}
+                  className="rounded shrink-0"
+                />
+                <span
+                  className="text-xs font-semibold text-gray-500 cursor-pointer select-none flex-1"
+                  onClick={() => toggleGroup(gps)}
+                >
+                  {ns}
+                </span>
+                <span className="text-[11px] text-gray-400 tabular-nums">
+                  {groupSelected}/{gps.length}
+                </span>
+              </div>
+
+              {/* projects in group */}
+              {gps.map((p) => (
+                <label key={p.id} className="flex items-center gap-3 px-4 pl-8 py-2 hover:bg-gray-50 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={selected.has(p.id)}
+                    onChange={() => toggle(p.id)}
+                    className="rounded shrink-0"
+                  />
+                  <span className="text-sm text-gray-700 truncate">{projectName(p)}</span>
+                </label>
+              ))}
+            </div>
+          );
+        })}
+      </div>
+    </Modal>
   );
 }

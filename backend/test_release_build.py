@@ -336,6 +336,13 @@ def test_the_preview_sorts_commits_by_readiness(client, repo):
     assert body["no_key"] == 1
 
 
+def test_the_preview_lists_the_commits_going_out(client, repo):
+    repo.ahead = [commit("LKAG-1: ready"), commit("no key"), commit("Merge branch 'x'", parents=("a", "b"))]
+    body = preview(client).json()
+    assert body["ahead"] == 3
+    assert [(c["title"], c["issues"]) for c in body["commits"]] == [("LKAG-1: ready", ["LKAG-1"]), ("no key", [])]
+
+
 def test_the_preview_sees_an_existing_tag_and_mr(client, repo):
     repo.tags = ["v1.1.0"]
     repo.mrs = [{"iid": 5, "state": "opened", "web_url": "u"}]

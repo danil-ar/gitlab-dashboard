@@ -138,6 +138,18 @@ def test_commits_are_sorted_by_whether_their_issue_is_ready():
     }
 
 
+def test_commits_are_described_for_reading_without_merges():
+    rows = rp.describe_commits([
+        {"id": "a" * 40, "short_id": "aaaaaaaa", "title": "LKAG-1: ready", "author_name": "Dana", "web_url": "u", "parent_ids": ["p"]},
+        {"id": "b" * 40, "title": "no key, other tracker RESECT-5", "author_name": "Sam", "web_url": "v", "parent_ids": ["p"]},
+        {"id": "c" * 40, "title": "Merge branch 'LKAG-1'", "author_name": "Dana", "web_url": "w", "parent_ids": ["a", "b"]},
+    ], "LKAG")
+    assert rows == [
+        {"short_id": "aaaaaaaa", "title": "LKAG-1: ready", "author": "Dana", "url": "u", "issues": ["LKAG-1"]},
+        {"short_id": "b" * 8, "title": "no key, other tracker RESECT-5", "author": "Sam", "url": "v", "issues": []},
+    ]
+
+
 def test_merge_block_reasons():
     assert rp.merge_block_reason("not_approved") == "The merge request needs approval"
     assert "something_new" in rp.merge_block_reason("something_new")

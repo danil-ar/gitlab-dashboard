@@ -286,8 +286,14 @@ def test_a_branch_commit_of_a_squashed_mr_doesnt_count_separately(repos):
     assert [change["ref"] for change in repos["lk-backend"]["changes"]] == ["!1", "!2"]
 
 
-def test_an_unmerged_mr_is_warned_about(repos):
-    assert any("!2 is not merged" in warning for warning in repos["lk-backend"]["warnings"])
+def test_an_unmerged_mr_is_reported_with_its_link_and_issues(repos):
+    assert repos["lk-backend"]["unmerged"] == [{
+        "ref": "!2", "url": f"https://gitlab.test/{BACKEND}/-/merge_requests/2", "issues": ["LKAG-2"],
+    }]
+
+
+def test_a_merged_mr_isnt_reported_as_unmerged(repos):
+    assert repos["lk-web"]["unmerged"] == []
 
 
 def test_squashed_and_commit_only_changes_are_found_in_their_tag(repos):

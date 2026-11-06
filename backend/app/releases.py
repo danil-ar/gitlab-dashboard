@@ -124,7 +124,7 @@ async def _all_tag_names(gl: GL, enc_path: str) -> list[str]:
 async def _plan_for_repo(gl: GL, path: str, changes: list[dict], released: bool) -> dict:
     """Plan row for one repo. Closed MRs were never shipped, so they don't count as changes."""
     enc = quote(path, safe="")
-    row = {"path": path, "name": path.rsplit("/", 1)[-1], "web_url": f"{gl.url}/{path}", "warnings": []}
+    row = {"path": path, "name": path.rsplit("/", 1)[-1], "web_url": f"{gl.url}/{path}", "warnings": [], "unmerged": []}
     live = [c for c in changes if c["state"] != "closed"]
 
     tags_call, languages_call, *refs_calls = await gather_settled([
@@ -153,7 +153,7 @@ async def _plan_for_repo(gl: GL, path: str, changes: list[dict], released: bool)
         containing.append(tags_of_change)
         c["tag"] = release_plan.first_tag(tags_of_change)
         if c["state"] in ("opened", "locked"):
-            row["warnings"].append(f"{c['ref']} is not merged yet ({issues})")
+            row["unmerged"].append({"ref": c["ref"], "url": c["url"], "issues": c["issues"]})
         elif c["state"] == "unknown":
             row["warnings"].append(f"{c['ref']}: could not load the MR, treated as untagged ({c['error']})")
         elif c["kind"] == "commit" and not c["tag"]:
@@ -311,6 +311,7 @@ async def repo_preview(jira: Jira, gl: GL, version_id: int, path: str, tag: str)
         "open_mr": {"iid": mr["iid"], "url": mr["web_url"]} if mr else None,
         "tag_exists": await _exists(gl, _tag_path(enc, tag)),
         "commands": release_plan.manual_commands(_RELEASE_SOURCE_BRANCH, target, head, target_head, tag, bool(commits)),
+        "commits": release_plan.describe_commits(commits, JIRA_PROJECT),
         **release_plan.summarize_commits(commits, statuses, _PLANNED_STATUSES, JIRA_PROJECT),
     }
 
