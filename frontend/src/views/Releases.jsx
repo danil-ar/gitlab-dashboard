@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import Banner from "../components/Banner";
 import BuildTagDialog from "../components/BuildTagDialog";
+import CommitList from "../components/CommitList";
 import CopyBlock from "../components/CopyBlock";
 import { Icon, IconSpin } from "../components/icons";
 import PageHeader from "../components/PageHeader";
@@ -142,7 +143,7 @@ function StatusBadge({ className, title, children }) {
   );
 }
 
-function RepoRow({ row, released, onEdit, onReset, onBuild }) {
+function RepoRow({ row, released, onEdit, onReset, onRemove, onBuild }) {
   const inputClass = (field) => `${TAG_INPUT} ${(row[field] ?? "") !== (row.suggested[field] ?? "") ? TAG_EDITED : "border-gray-200"}`;
   const edited = (row.rollback_tag ?? "") !== (row.suggested.rollback_tag ?? "") || (row.deploy_tag ?? "") !== (row.suggested.deploy_tag ?? "");
   const badge = STATE_BADGES[released && TAGGED_STATES.has(row.state) ? "shipped" : row.state];
@@ -177,6 +178,19 @@ function RepoRow({ row, released, onEdit, onReset, onBuild }) {
                    className="font-mono text-gray-500 hover:text-blue-700 hover:underline">
                   {row.latest_tag ?? "none"}
                 </a>
+              </span>
+            )}
+            {!released && row.compare_url && (
+              <a href={row.compare_url} target="_blank" rel="noopener noreferrer"
+                 title={`What develop has on top of ${row.latest_tag}`}
+                 className="text-blue-600 hover:underline">
+                compare
+              </a>
+            )}
+            {row.addedByHand && (
+              <span>
+                {"added by you · "}
+                <button onClick={() => onRemove(row.path)} className="text-blue-600 hover:underline">remove</button>
               </span>
             )}
           </div>
@@ -288,13 +302,75 @@ function statusCounts(issues) {
   return [...counts].map(([name, count]) => `${name} ${count}`).join(" · ");
 }
 
-function ReleaseDetail({ release, filterPaths, jiraUrl, onTokenRejected }) {
+function IssueKeys({ keys, releaseKeys, jiraUrl }) {
+  return keys.map((key) => {
+    const inRelease = releaseKeys.has(key);
+    return (
+      <a key={key} href={`${jiraUrl}/browse/${key}`} target="_blank" rel="noopener noreferrer"
+         title={inRelease ? "In this release" : "Not in this release"}
+         className={`font-mono hover:underline ${inRelease ? "text-green-700 font-medium" : "text-gray-500"}`}>
+        {key}
+      </a>
+    );
+  });
+}
+
+// Nothing in Jira ties these to the release, so they stay out of the plan until somebody adds them.
+function OtherRepos({ others, repos, releaseKeys, jiraUrl, onAdd, onRetry }) {
+  const inRelease = (repo) => repo.issues.filter((key) => releaseKeys.has(key)).length;
+  const sorted = [...repos].sort((a, b) => inRelease(b) - inRelease(a) || b.commits.length - a.commits.length);
+  const quiet = !others.loading && !others.error && repos.length === 0;
+  return (
+    <section>
+      <div className="mb-2 flex flex-wrap items-baseline gap-x-2">
+        <h3 className={SECTION_TITLE}>Other projects</h3>
+        <span className="text-xs text-gray-500">in your filter, with changes since their last tag{repos.length > 0 && ` · ${repos.length}`}</span>
+      </div>
+      {others.error && <Banner onRetry={onRetry}>Could not check the other projects: {others.error}</Banner>}
+      {others.loading && repos.length === 0 && (
+        <div className="flex items-center gap-2 text-xs text-gray-500"><IconSpin className="w-3 h-3" /> Checking…</div>
+      )}
+      {quiet && <p className="text-xs text-gray-500">None of them has anything new.</p>}
+      {sorted.length > 0 && (
+        <div className="border border-gray-200 rounded-lg bg-white divide-y divide-gray-100">
+          {sorted.map((repo) => (
+            <div key={repo.path} className="px-3 py-2.5 space-y-1.5">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                <input
+                  type="checkbox"
+                  checked={false}
+                  aria-label={`Add ${repo.name} to the plans`}
+                  onChange={() => onAdd(repo)}
+                  className="w-4 h-4 rounded accent-blue-600 cursor-pointer"
+                />
+                <a href={repo.web_url} target="_blank" rel="noopener noreferrer" className="text-sm font-medium text-gray-900 hover:text-blue-700 hover:underline">{repo.name}</a>
+                <span className="font-mono text-gray-600">{repo.rollback_tag} → {repo.deploy_tag}</span>
+                <IssueKeys keys={repo.issues} releaseKeys={releaseKeys} jiraUrl={jiraUrl} />
+                <a href={repo.compare_url} target="_blank" rel="noopener noreferrer" className="ml-auto text-blue-600 hover:underline">Compare</a>
+              </div>
+              <CommitList commits={repo.commits} label={`since ${repo.latest_tag}`} noKey={repo.no_key} open={false} />
+            </div>
+          ))}
+        </div>
+      )}
+      {others.unchecked.length > 0 && (
+        <p className="mt-2 text-xs text-gray-500">
+          Not checked: {others.unchecked.map(({ name, reason }) => `${name} (${reason})`).join(", ")}
+        </p>
+      )}
+    </section>
+  );
+}
+
+function ReleaseDetail({ release, filterPaths, filterProjects, jiraUrl, onTokenRejected }) {
   const [plan, setPlan]       = useState(null);
   const [error, setError]     = useState(null);
   const [loading, setLoading] = useState(true);
   const [edits, setEdits]     = useState({});
   const [attempt, setAttempt] = useState(0);
   const [building, setBuilding] = useState(null);
+  const [others, setOthers]   = useState(null);
+  const [added, setAdded]     = useState({});
 
   useEffect(() => {
     const controller = new AbortController();
@@ -321,13 +397,47 @@ function ReleaseDetail({ release, filterPaths, jiraUrl, onTokenRejected }) {
 
   const repos = plan?.repos ?? [];
   const hiddenRepos = repos.filter((repo) => !inFilter(repo.path));
-  const rows = repos.filter((repo) => inFilter(repo.path)).map((repo) => ({
-    ...repo,
-    // Newer tags since this one are only a question for a release that hasn't shipped.
-    include: !LEFT_OUT_BY_DEFAULT.has(repo.state) || (release.released && repo.state === "older_tag"),
-    suggested: { rollback_tag: repo.rollback_tag, deploy_tag: repo.deploy_tag },
-    ...edits[repo.path],
-  }));
+  const plannedPaths = new Set(repos.map((repo) => repo.path.toLowerCase()));
+
+  // What's in the filter but not in the plan. A shipped release has nothing left to add.
+  const otherPaths = plan && !release.released
+    ? (filterProjects ?? []).filter((path) => !plannedPaths.has(path.toLowerCase()))
+    : [];
+  const otherKey = otherPaths.join(",");
+
+  useEffect(() => {
+    if (!otherKey) {
+      setOthers(null);
+      return undefined;
+    }
+    const controller = new AbortController();
+    setOthers((previous) => ({ repos: [], unchecked: [], ...previous, loading: true, error: null }));
+    const query = new URLSearchParams(otherKey.split(",").map((path) => ["path", path]));
+    api.get(`/api/releases/unplanned?${query}`, { signal: controller.signal })
+      .then((found) => setOthers({ ...found, loading: false, error: null }))
+      .catch((e) => {
+        if (e.name === "AbortError") return;
+        setOthers((previous) => ({ ...previous, loading: false, error: e.message }));
+      });
+    return () => controller.abort();
+  }, [otherKey, attempt]);
+
+  // A tag built for an added repo leaves nothing to report, so it would drop out of the plan it was built for.
+  const foundNow = Object.fromEntries((others?.repos ?? []).map((repo) => [repo.path, repo]));
+  const addedRepos = Object.values(added)
+    .filter((repo) => !plannedPaths.has(repo.path.toLowerCase()))
+    .map((repo) => ({ ...(repo.built ? repo : foundNow[repo.path] ?? repo), addedByHand: true }));
+
+  const rows = [...repos.filter((repo) => inFilter(repo.path)), ...addedRepos]
+    .sort((a, b) => a.group.localeCompare(b.group) || a.name.localeCompare(b.name))
+    .map((repo) => ({
+      ...repo,
+      // Newer tags since this one are only a question for a release that hasn't shipped.
+      include: !LEFT_OUT_BY_DEFAULT.has(repo.state) || (release.released && repo.state === "older_tag"),
+      suggested: { rollback_tag: repo.rollback_tag, deploy_tag: repo.deploy_tag },
+      ...edits[repo.path],
+    }));
+  const offered = (others?.repos ?? []).filter((repo) => !added[repo.path]);
 
   // Issues with no GitLab links stay: nothing says they don't belong to the selected repos.
   const allIssues = plan?.issues ?? [];
@@ -336,6 +446,7 @@ function ReleaseDetail({ release, filterPaths, jiraUrl, onTokenRejected }) {
     .map((issue) => ({ ...issue, links: issue.links.filter((link) => inFilter(link.path)) }));
   const hiddenIssueCount = allIssues.length - issues.length;
   const inRelease = issues.filter((issue) => issue.in_release);
+  const releaseKeys = new Set(allIssues.filter((issue) => issue.in_release).map((issue) => issue.key));
   const otherIssues = issues
     .filter((issue) => !issue.in_release)
     .sort((a, b) => (OTHER_STATUS_ORDER[a.status_category] ?? 1) - (OTHER_STATUS_ORDER[b.status_category] ?? 1)
@@ -352,10 +463,20 @@ function ReleaseDetail({ release, filterPaths, jiraUrl, onTokenRejected }) {
 
   const reload = () => setAttempt((n) => n + 1);
 
+  const onAdd = (repo) => setAdded((prev) => ({ ...prev, [repo.path]: repo }));
+  const onRemove = (path) => {
+    setAdded(({ [path]: _dropped, ...rest }) => rest);
+    onReset(path);
+  };
+
   // Once a tag is built the plan knows it, so a tag typed for that repo has nothing left to say.
   const closeBuild = (built) => {
     if (built) {
-      onReset(building.path);
+      const { path, deploy_tag: tag, rollback_tag: rollback } = building;
+      setAdded((prev) => (prev[path]
+        ? { ...prev, [path]: { ...prev[path], built: true, state: "tagged", latest_tag: tag, deploy_tag: tag, rollback_tag: rollback, compare_url: null } }
+        : prev));
+      onReset(path);
       reload();
     }
     setBuilding(null);
@@ -439,7 +560,7 @@ function ReleaseDetail({ release, filterPaths, jiraUrl, onTokenRejected }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {rows.map((row) => <RepoRow key={row.path} row={row} released={release.released} onEdit={onEdit} onReset={onReset} onBuild={setBuilding} />)}
+                    {rows.map((row) => <RepoRow key={row.path} row={row} released={release.released} onEdit={onEdit} onReset={onReset} onRemove={onRemove} onBuild={setBuilding} />)}
                   </tbody>
                 </table>
               </div>
@@ -450,6 +571,13 @@ function ReleaseDetail({ release, filterPaths, jiraUrl, onTokenRejected }) {
               </p>
             )}
           </section>
+
+          {others && (
+            <OtherRepos others={others} repos={offered} releaseKeys={releaseKeys} jiraUrl={jiraUrl} onAdd={onAdd} onRetry={reload} />
+          )}
+          {!release.released && !filterProjects && (
+            <p className="text-xs text-gray-500">Pick projects under Projects to also see which others have changes since their last tag.</p>
+          )}
 
           {rows.length > 0 && (
             <section className="grid md:grid-cols-2 gap-4">
@@ -506,10 +634,11 @@ export default function Releases({ jiraUrl, connected, onConnected, projects, se
 
   // null means no filter: an empty selection shows everything, like the rest of the app,
   // and without the project list the selected ids can't be matched to repos at all.
-  const filterPaths = useMemo(() => {
+  const filterProjects = useMemo(() => {
     if (selectedProjectIds.size === 0 || projects.length === 0) return null;
-    return new Set(projects.filter((p) => selectedProjectIds.has(p.id)).map((p) => p.path_with_namespace.toLowerCase()));
+    return projects.filter((p) => selectedProjectIds.has(p.id)).map((p) => p.path_with_namespace);
   }, [projects, selectedProjectIds]);
+  const filterPaths = useMemo(() => filterProjects && new Set(filterProjects.map((path) => path.toLowerCase())), [filterProjects]);
 
   if (!connected || tokenProblem) {
     return (
@@ -580,7 +709,7 @@ export default function Releases({ jiraUrl, connected, onConnected, projects, se
           </div>
         )}
         {selected && (
-          <ReleaseDetail key={selected.id} release={selected} filterPaths={filterPaths} jiraUrl={jiraUrl} onTokenRejected={setTokenProblem} />
+          <ReleaseDetail key={selected.id} release={selected} filterPaths={filterPaths} filterProjects={filterProjects} jiraUrl={jiraUrl} onTokenRejected={setTokenProblem} />
         )}
       </div>
     </main>

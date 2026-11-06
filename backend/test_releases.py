@@ -313,6 +313,14 @@ def test_the_first_tag_of_a_commit_in_many_tags_is_found_on_a_later_page(repos):
     assert (row["state"], row["deploy_tag"], row["rollback_tag"]) == ("older_tag", "v3.0.0", None)
 
 
+def test_a_plan_row_links_to_what_a_new_tag_would_add(repos):
+    assert repos["lk-web"]["compare_url"] == f"https://gitlab.test/{WEB}/-/compare/v2.1.0...develop"
+
+
+def test_a_row_that_cant_be_read_has_nothing_to_compare(repos):
+    assert repos["lk-gone"]["compare_url"] is None
+
+
 def test_a_repo_with_only_closed_mrs_isnt_planned(repos):
     assert "lk-closed" not in repos
 

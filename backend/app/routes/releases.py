@@ -60,6 +60,11 @@ async def jira_release_plan(
     return await releases.build_plan(jira, gl, version_id, released)
 
 
+@router.get("/releases/unplanned")
+async def unplanned_changes(path: list[str] = Query(..., max_length=100), gl: GL = Depends(get_gl)):
+    return await releases.unplanned_changes(gl, path)
+
+
 @router.get("/jira/releases/{version_id}/repo-preview")
 async def release_repo_preview(
     version_id: int,

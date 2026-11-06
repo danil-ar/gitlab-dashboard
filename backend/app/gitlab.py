@@ -180,6 +180,15 @@ class GL:
             raise gitlab_error(r, path)
         return r
 
+    async def exists(self, path: str) -> bool:
+        """Whether GitLab has this. Missing is an answer here, so it isn't logged as a problem."""
+        r = await self._send("GET", self._api(path))
+        if r.status_code == 404:
+            return False
+        if r.status_code >= 400:
+            raise gitlab_error(r, path)
+        return True
+
     async def try_get(self, path: str, params: dict | None = None) -> httpx.Response | None:
         """GET that degrades to None — for per-MR extras where one failing
         project must not take down the whole dashboard."""

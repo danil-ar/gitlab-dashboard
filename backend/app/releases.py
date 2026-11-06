@@ -121,6 +121,11 @@ async def _all_tag_names(gl: GL, enc_path: str) -> list[str]:
     return [t["name"] for t in await _all_pages(gl, f"/projects/{enc_path}/repository/tags")]
 
 
+def _compare_url(repo_url: str, tag: str) -> str:
+    """GitLab's page for what a new tag would add on top of this one."""
+    return f"{repo_url}/-/compare/{quote(tag, safe='')}...{_RELEASE_SOURCE_BRANCH}"
+
+
 async def _plan_for_repo(gl: GL, path: str, changes: list[dict], released: bool) -> dict:
     """Plan row for one repo. Closed MRs were never shipped, so they don't count as changes."""
     enc = quote(path, safe="")
@@ -139,7 +144,7 @@ async def _plan_for_repo(gl: GL, path: str, changes: list[dict], released: bool)
     row["issues"] = sorted({key for c in live for key in c["issues"]})
     if isinstance(tags_call, Exception):
         return {**row, "state": "error", "error": f"Could not read tags: {why(tags_call)}",
-                "latest_tag": None, "deploy_tag": None, "rollback_tag": None}
+                "latest_tag": None, "deploy_tag": None, "rollback_tag": None, "compare_url": None}
 
     refs_by_sha = dict(zip([c["sha"] for c in live if c["sha"]], refs_calls))
     containing = []
@@ -173,7 +178,8 @@ async def _plan_for_repo(gl: GL, path: str, changes: list[dict], released: bool)
         )
     elif not plan["rollback_tag"]:
         row["warnings"].append("No earlier vX.Y.Z tag to roll back to.")
-    return {**row, **plan, "error": None}
+    compare_url = _compare_url(row["web_url"], plan["latest_tag"]) if plan["latest_tag"] else None
+    return {**row, **plan, "error": None, "compare_url": compare_url}
 
 
 
@@ -253,19 +259,9 @@ async def build_plan(jira: Jira, gl: GL, version_id: int, released: bool = False
 
 
 
-async def _exists(gl: GL, path: str) -> bool:
-    try:
-        await gl.get(path)
-        return True
-    except HTTPException as e:
-        if e.status_code == 404:
-            return False
-        raise
-
-
 async def _release_target_branch(gl: GL, enc: str) -> str:
     for name in _RELEASE_TARGET_BRANCHES:
-        if await _exists(gl, f"/projects/{enc}/repository/branches/{name}"):
+        if await gl.exists(f"/projects/{enc}/repository/branches/{name}"):
             return name
     raise HTTPException(status_code=404, detail=f"The repo has no {' or '.join(_RELEASE_TARGET_BRANCHES)} branch")
 
@@ -293,6 +289,55 @@ def _tag_path(enc: str, tag: str) -> str:
 
 
 
+async def _changes_since_tag(gl: GL, path: str) -> dict | None:
+    """A plan row for a repo no issue in the release points at, if it has work waiting since its last tag.
+
+    With no develop branch it isn't released this way at all: lk-utils, for one, goes out on its own
+    from master. Merge commits alone aren't work either, master merged back after a release looks like that.
+    """
+    enc = quote(path, safe="")
+    if not await gl.exists(f"/projects/{enc}/repository/branches/{_RELEASE_SOURCE_BRANCH}"):
+        return None
+    plan = release_plan.plan_repo(await _all_tag_names(gl, enc), [[]])
+    if plan["state"] == "no_tags":
+        raise HTTPException(status_code=404, detail="no vX.Y.Z tags to compare with")
+    commits = await _all_pages(gl, f"/projects/{enc}/repository/commits", {
+        "ref_name": f"{plan['latest_tag']}..{_RELEASE_SOURCE_BRANCH}",
+    })
+    described = release_plan.describe_commits(commits, JIRA_PROJECT)
+    if not described:
+        return None
+    name, web_url = path.rsplit("/", 1)[-1], f"{gl.url}/{path}"
+    return {
+        **plan,
+        "path": path,
+        "name": name,
+        "web_url": web_url,
+        "group": release_plan.repo_group(name, await _json(gl, f"/projects/{enc}/languages")),
+        "issues": sorted({key for c in described for key in c["issues"]}),
+        "commits": described,
+        "no_key": sum(not c["issues"] for c in described),
+        "compare_url": _compare_url(web_url, plan["latest_tag"]),
+        "warnings": [],
+        "unmerged": [],
+        "changes": [],
+        "error": None,
+    }
+
+
+async def unplanned_changes(gl: GL, paths: list[str]) -> dict:
+    """Repos with changes since their last tag that nothing in Jira ties to the release. Nobody's decided
+    they ship, so this only lists them: the person looking adds them to the plan or doesn't."""
+    results = await gather_settled([_changes_since_tag(gl, path) for path in paths])
+    repos, unchecked = [], []
+    for path, result in zip(paths, results):
+        if isinstance(result, Exception):
+            unchecked.append({"name": path.rsplit("/", 1)[-1], "reason": why(result)})
+        elif result is not None:
+            repos.append(result)
+    return {"repos": repos, "unchecked": unchecked}
+
+
 async def repo_preview(jira: Jira, gl: GL, version_id: int, path: str, tag: str) -> dict:
     """What building this tag would do, and everything that would reach the target branch with it."""
     enc = quote(path, safe="")
@@ -309,7 +354,7 @@ async def repo_preview(jira: Jira, gl: GL, version_id: int, path: str, tag: str)
         "target_sha": target_head,
         "ahead": len(commits),
         "open_mr": {"iid": mr["iid"], "url": mr["web_url"]} if mr else None,
-        "tag_exists": await _exists(gl, _tag_path(enc, tag)),
+        "tag_exists": await gl.exists(_tag_path(enc, tag)),
         "commands": release_plan.manual_commands(_RELEASE_SOURCE_BRANCH, target, head, target_head, tag, bool(commits)),
         "commits": release_plan.describe_commits(commits, JIRA_PROJECT),
         **release_plan.summarize_commits(commits, statuses, _PLANNED_STATUSES, JIRA_PROJECT),
@@ -377,7 +422,7 @@ async def build_tag(gl: GL, path: str, tag: str, source_sha: str, target_sha: st
         "tag_url": f"{repo_url}/-/tags/{quote(tag, safe='')}",
         "pipelines_url": f"{repo_url}/-/pipelines?ref={quote(tag, safe='')}",
     }
-    if await _exists(gl, _tag_path(enc, tag)):
+    if await gl.exists(_tag_path(enc, tag)):
         return done
 
     mr_url = None
