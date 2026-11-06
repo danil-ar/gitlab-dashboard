@@ -27,18 +27,19 @@ export default function RefreshButton({ onRefresh, interval = 0, onIntervalChang
     <div ref={ref} className="relative flex items-stretch">
       <button
         onClick={onRefresh}
-        className="flex items-center gap-1.5 text-sm px-3 py-1.5 border border-r-0 border-gray-200 rounded-l-md bg-white hover:bg-gray-50 text-gray-700 transition-colors"
+        data-split={onIntervalChange ? "true" : undefined}
+        className="flex items-center gap-1.5 text-sm px-3 py-1.5 border border-gray-200 rounded-md data-[split=true]:border-r-0 data-[split=true]:rounded-r-none bg-white hover:bg-gray-50 text-gray-700 transition-colors"
       >
         <Icon name="refresh" className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
         Refresh
-        {interval > 0 && <span className="text-[11px] text-gray-400">· {activeLabel}</span>}
+        {interval > 0 && <span className="text-[11px] text-gray-500">· {activeLabel}</span>}
       </button>
-      <button
+      {onIntervalChange && <button
         onClick={() => setOpen((v) => !v)}
         className={`flex items-center px-2 border border-gray-200 rounded-r-md text-gray-500 hover:bg-gray-50 transition-colors ${open ? "bg-gray-100" : "bg-white"}`}
       >
         <Icon name="chevronDown" className="w-3 h-3" strokeWidth={2} />
-      </button>
+      </button>}
 
       {open && (
         <div className="absolute right-0 top-[calc(100%+4px)] bg-white border border-gray-200 rounded-lg shadow-lg z-20 w-24 py-1">

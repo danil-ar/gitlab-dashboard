@@ -9,7 +9,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 export default function Avatar({ user, size = "sm", showTooltip = false }) {
   const src = user?.avatar_url;
   const [stage, setStage] = useState("direct");
-  const dim = size === "md" ? "w-7 h-7 text-xs" : "w-5 h-5 text-[10px]";
+  const dim = size === "md" ? "w-7 h-7 text-xs" : "w-5 h-5 text-[11px]";
 
   useEffect(() => { setStage("direct"); }, [src]);
 

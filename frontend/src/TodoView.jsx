@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import Avatar from "./components/Avatar";
 import Banner from "./components/Banner";
+import PageHeader from "./components/PageHeader";
 import RefreshButton from "./components/RefreshButton";
 import { Icon } from "./components/icons";
 import { api } from "./api";
@@ -64,7 +65,7 @@ function FilterPill({ active, onClick, children, count, urgent }) {
     >
       {children}
       {count != null && (
-        <span className={`tabular-nums ${active ? "opacity-70" : "opacity-60"}`}>{count}</span>
+        <span className={`tabular-nums ${active ? "opacity-70" : "opacity-80"}`}>{count}</span>
       )}
     </button>
   );
@@ -91,13 +92,13 @@ function TodoRow({ todo, onMarkDone, busy }) {
         <div className="flex items-center gap-1.5 min-w-0">
           <Icon name={targetIconName(todo.target_type)} className={`w-3 h-3 shrink-0 ${targetIconColor(todo.target_type)}`} />
           <span className="font-mono text-[11px] text-gray-500 truncate">
-            {path}<span className="text-gray-400">{refSymbol(todo.target_type)}</span>{iid}
+            {path}<span className="text-gray-500">{refSymbol(todo.target_type)}</span>{iid}
           </span>
-          <span className="ml-auto text-[11px] text-gray-400 shrink-0 group-hover:hidden">{timeAgo(todo.created_at)}</span>
+          <span className="ml-auto text-[11px] text-gray-500 shrink-0">{timeAgo(todo.created_at)}</span>
           <button
             onClick={() => onMarkDone(todo.id)}
             disabled={busy}
-            className="ml-auto hidden group-hover:flex items-center gap-1 text-[11px] text-gray-500 hover:text-green-700 disabled:opacity-40 shrink-0"
+            className="shrink-0 flex items-center gap-1 text-[11px] text-gray-500 hover:text-green-700 disabled:opacity-40 shrink-0"
             title="Mark as done"
           >
             <Icon name="check" className="w-3 h-3 text-green-600" /> Done
@@ -128,7 +129,7 @@ function TodoRow({ todo, onMarkDone, busy }) {
           )}
           <span>{action.label}</span>
           <span className="text-gray-300">·</span>
-          <span className="px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-600 text-[10px]">{shortType(todo.target_type)}</span>
+          <span className="px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-600 text-[11px]">{shortType(todo.target_type)}</span>
         </div>
 
         {/* body excerpt */}
@@ -148,10 +149,10 @@ function TodoRow({ todo, onMarkDone, busy }) {
 function GroupHeader({ label, count, hint }) {
   return (
     <div className="flex items-center gap-2 pb-2">
-      <Icon name="clock" className="w-3 h-3 text-gray-400" />
+      <Icon name="clock" className="w-3 h-3 text-gray-500" />
       <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">{label}</span>
       <span className="text-[11px] font-semibold tabular-nums px-1.5 py-0.5 rounded-full bg-gray-200 text-gray-700">{count}</span>
-      {hint && <span className="ml-auto text-[11px] text-gray-400">{hint}</span>}
+      {hint && <span className="ml-auto text-[11px] text-gray-500">{hint}</span>}
     </div>
   );
 }
@@ -245,12 +246,35 @@ export default function TodoView({ onCountChange }) {
 
   return (
     <main className="flex-1 overflow-auto">
+      <PageHeader
+        className="sticky top-0 z-20"
+        title="To-Do"
+        subtitle={`${displayTodos.length} waiting on you`}
+      >
+        {confirmAll ? (
+          <>
+            <span className="text-xs text-gray-600">Mark all as done?</span>
+            <button onClick={markAllDone}
+                    className="text-xs px-2.5 py-1.5 rounded-md bg-green-600 hover:bg-green-700 text-white font-medium transition-colors">
+              Yes
+            </button>
+            <button onClick={() => setConfirmAll(false)}
+                    className="text-xs px-2.5 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50 transition-colors">
+              Cancel
+            </button>
+          </>
+        ) : (
+          <button onClick={() => setConfirmAll(true)}
+                  className="text-sm px-3 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50 flex items-center gap-1.5">
+            <Icon name="check" className="w-3 h-3 text-green-600" /> Mark all done
+          </button>
+        )}
+        <RefreshButton onRefresh={load} loading={loading} interval={autoRefreshSecs} onIntervalChange={setAutoRefreshSecs} />
+      </PageHeader>
+
       <div className="max-w-5xl mx-auto px-6 py-6 space-y-4">
-        <div className="flex items-center gap-3 flex-wrap">
-          <Icon name="inbox" className="w-4 h-4 text-blue-600 shrink-0" />
-          <span className="text-sm font-semibold text-gray-900">To-Do</span>
-          <span className="text-sm text-gray-400 tabular-nums">{displayTodos.length}</span>
-          <div className="flex flex-wrap items-center gap-2 flex-1">
+        {displayTodos.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2">
             {Object.entries(ACTIONS).map(([key, meta]) => {
               const n = counts.byAction[key] ?? 0;
               if (n === 0) return null;
@@ -259,33 +283,12 @@ export default function TodoView({ onCountChange }) {
                 <FilterPill key={key} active={actionFilter === key}
                             onClick={() => setAct(actionFilter === key ? "" : key)}
                             count={n} urgent={urgent}>
-                  {meta.label.replace(/ your?\b/, "").replace(/^[a-z]/, (c) => c.toUpperCase())}
+                  {meta.label.replace(/ your?\b/, "").replace(/ on$/, "").replace(/^[a-z]/, (c) => c.toUpperCase())}
                 </FilterPill>
               );
             })}
           </div>
-          <div className="flex items-center gap-2 ml-auto shrink-0">
-            {confirmAll ? (
-              <>
-                <span className="text-xs text-gray-600">Mark all as done?</span>
-                <button onClick={markAllDone}
-                        className="text-xs px-2.5 py-1.5 rounded-md bg-green-600 hover:bg-green-700 text-white font-medium transition-colors">
-                  Yes
-                </button>
-                <button onClick={() => setConfirmAll(false)}
-                        className="text-xs px-2.5 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50 transition-colors">
-                  Cancel
-                </button>
-              </>
-            ) : (
-              <button onClick={() => setConfirmAll(true)}
-                      className="text-sm px-3 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50 flex items-center gap-1.5">
-                <Icon name="check" className="w-3 h-3 text-green-600" /> Mark all done
-              </button>
-            )}
-            <RefreshButton onRefresh={load} loading={loading} interval={autoRefreshSecs} onIntervalChange={setAutoRefreshSecs} />
-          </div>
-        </div>
+        )}
 
         {error && <Banner onRetry={load}>{error}</Banner>}
 
@@ -293,7 +296,7 @@ export default function TodoView({ onCountChange }) {
           <div className="text-center py-20">
             <Icon name="check" className="w-8 h-8 text-green-500 mx-auto mb-2" />
             <p className="text-sm text-gray-700 font-semibold">All caught up</p>
-            <p className="text-xs text-gray-400 mt-1">Nothing waiting on you.</p>
+            <p className="text-xs text-gray-500 mt-1">Nothing waiting on you.</p>
           </div>
         ) : (
           <div className="space-y-4">

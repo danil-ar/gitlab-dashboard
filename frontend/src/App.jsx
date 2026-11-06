@@ -50,7 +50,7 @@ export default function Root() {
 
   if (!ready) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center text-sm text-gray-400">
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center text-sm text-gray-500">
         Loading…
       </div>
     );
@@ -303,16 +303,6 @@ function App({ activeProfile, profiles, jiraUrl, onRefresh }) {
   const handleProjectClick = (projectId) =>
     goBrowse({ project_id: String(projectId), state: "opened" });
 
-  const visibleProjects = (selectedProjectIds.size > 0
-    ? projects.filter((p) => selectedProjectIds.has(p.id))
-    : projects
-  ).slice().sort((a, b) => a.path_with_namespace.localeCompare(b.path_with_namespace));
-
-  const projectOpts = [
-    { value: "",  label: "All projects" },
-    ...visibleProjects.map((p) => ({ value: String(p.id), label: p.path_with_namespace })),
-  ];
-
   const counts = useMemo(() => {
     // a mention on a merge request already in a bucket is shown on its row, so
     // counting it here as well would count the same thing twice
@@ -374,13 +364,13 @@ function App({ activeProfile, profiles, jiraUrl, onRefresh }) {
         <header className="h-12 bg-white border-b border-gray-200 px-4 flex items-center gap-3 shrink-0">
           <div className="flex items-center gap-2 shrink-0">
             <span className="w-6 h-6 rounded-md bg-gradient-to-br from-orange-500 to-orange-600 grid place-items-center text-white text-xs font-bold select-none">⌘</span>
-            <h1 className="text-sm font-semibold text-gray-900 whitespace-nowrap">GitLab MRs</h1>
+            <h1 className="text-sm font-semibold text-gray-900 whitespace-nowrap">GitLab Dashboard</h1>
           </div>
 
           <div className="flex-1 flex justify-center px-4 max-w-2xl mx-auto w-full">
             {isMRView && (
               <div className="relative w-full">
-                <Icon name="search" className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
+                <Icon name="search" className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500 pointer-events-none" />
                 <input
                   type="text"
                   placeholder={view.kind === "browse" ? "Search by title…" : "Filter merge requests…"}
@@ -395,7 +385,7 @@ function App({ activeProfile, profiles, jiraUrl, onRefresh }) {
                       setPage(1);
                       setFilters((prev) => ({ ...prev, search: "" }));
                     }}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-600"
                   >
                     <Icon name="close" />
                   </button>
@@ -416,7 +406,7 @@ function App({ activeProfile, profiles, jiraUrl, onRefresh }) {
               <Icon name="filter" />
               Projects
               {selectedProjectIds.size > 0 && (
-                <span className="bg-blue-600 text-white rounded-full px-1.5 text-[10px] font-bold leading-5">
+                <span className="bg-blue-600 text-white rounded-full px-1.5 text-[11px] font-bold leading-5">
                   {selectedProjectIds.size}
                 </span>
               )}
@@ -463,7 +453,9 @@ function App({ activeProfile, profiles, jiraUrl, onRefresh }) {
         ) : (
           <Browse
             data={data} loading={loading} error={error}
-            filters={filters} setFilter={setFilter} projectOpts={projectOpts}
+            filters={filters} setFilter={setFilter}
+            projectName={projects.find((p) => String(p.id) === String(filters.project_id))?.path_with_namespace}
+            clearProject={() => goBrowse({ project_id: "" })}
             needsMyApproval={needsMyApproval} setNeedsMyApproval={setNeedsMyApproval}
             refresh={() => load(filters, page, false, selectedProjectIds)}
             page={page} setPage={setPage} currentUser={currentUser}

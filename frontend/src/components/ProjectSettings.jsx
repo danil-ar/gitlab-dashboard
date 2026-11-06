@@ -77,11 +77,11 @@ export default function ProjectSettings({ projects, profileId, onClose }) {
         <h2 className="text-sm font-semibold text-gray-900">Project filter</h2>
         <div className="flex items-center gap-3">
           {selected.size > 0 && (
-            <button onClick={clearAll} className="text-xs text-gray-400 hover:text-gray-600">
+            <button onClick={clearAll} className="text-xs text-gray-500 hover:text-gray-600">
               Clear all ({selected.size})
             </button>
           )}
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-600 text-lg leading-none">✕</button>
         </div>
       </div>
 
@@ -99,13 +99,13 @@ export default function ProjectSettings({ projects, profileId, onClose }) {
           {allFilteredSelected ? "Deselect all" : "Select all"} ({filtered.length})
         </label>
         {selected.size === 0 && (
-          <span className="ml-auto text-xs text-gray-400">No selection = show all</span>
+          <span className="ml-auto text-xs text-gray-500">No selection = show all</span>
         )}
       </div>
 
       <div className="overflow-y-auto flex-1 py-2">
         {filtered.length === 0 ? (
-          <p className="text-center py-8 text-sm text-gray-400">No projects found</p>
+          <p className="text-center py-8 text-sm text-gray-500">No projects found</p>
         ) : groups.map(({ ns, projects: gps }) => {
           const groupSelected = gps.filter((p) => selected.has(p.id)).length;
           const allGroupSelected = groupSelected === gps.length;
@@ -128,7 +128,7 @@ export default function ProjectSettings({ projects, profileId, onClose }) {
                 >
                   {ns}
                 </span>
-                <span className="text-[11px] text-gray-400 tabular-nums">
+                <span className="text-[11px] text-gray-500 tabular-nums">
                   {groupSelected}/{gps.length}
                 </span>
               </div>

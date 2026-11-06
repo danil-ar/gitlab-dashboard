@@ -32,7 +32,7 @@ function CommitList({ commits, ahead, noKey }) {
       <summary className="px-2.5 py-2 font-medium text-gray-700 cursor-pointer select-none">
         {commits.length} commit{commits.length !== 1 ? "s" : ""} going out
         {noKey > 0 && <span className="text-amber-700">, {noKey} without an issue key</span>}
-        {merges > 0 && <span className="font-normal text-gray-400"> · {merges} merge commit{merges !== 1 ? "s" : ""} not shown</span>}
+        {merges > 0 && <span className="font-normal text-gray-500"> · {merges} merge commit{merges !== 1 ? "s" : ""} not shown</span>}
       </summary>
       <ul className="max-h-48 overflow-y-auto border-t border-gray-100 divide-y divide-gray-100">
         {commits.map((c) => (
@@ -40,7 +40,7 @@ function CommitList({ commits, ahead, noKey }) {
             <a href={c.url} target="_blank" rel="noopener noreferrer" className="font-mono text-blue-700 hover:underline shrink-0">{c.short_id}</a>
             <span className="flex-1 min-w-0 truncate text-gray-800" title={c.title}>{c.title}</span>
             {c.issues.length === 0 && <span className="shrink-0 text-amber-700">no issue</span>}
-            <span className="shrink-0 max-w-32 truncate text-gray-400" title={c.author}>{c.author}</span>
+            <span className="shrink-0 max-w-32 truncate text-gray-500" title={c.author}>{c.author}</span>
           </li>
         ))}
       </ul>
@@ -119,7 +119,7 @@ export default function BuildTagDialog({ row, versionId, jiraUrl, onClose }) {
 
       <div className="px-5 py-4 space-y-3 overflow-y-auto text-sm text-gray-700">
         {!preview && !error && (
-          <div className="flex items-center gap-2 text-gray-400 py-4 justify-center">
+          <div className="flex items-center gap-2 text-gray-500 py-4 justify-center">
             <IconSpin className="w-4 h-4" /> Checking what would go out…
           </div>
         )}
@@ -234,7 +234,7 @@ export default function BuildTagDialog({ row, versionId, jiraUrl, onClose }) {
           {done ? "Close" : "Cancel"}
         </button>
         {!done && preview && !preview.tag_exists && (
-          <button onClick={build} disabled={!canRun} className="text-sm px-3 py-1.5 rounded-md bg-orange-500 hover:bg-orange-600 text-white font-medium disabled:opacity-50 flex items-center gap-1.5">
+          <button onClick={build} disabled={!canRun} className="text-sm px-3 py-1.5 rounded-md bg-orange-700 hover:bg-orange-800 text-white font-medium disabled:opacity-50 flex items-center gap-1.5">
             {running && <IconSpin />} {runLabel}
           </button>
         )}

@@ -17,18 +17,18 @@ export default function CommitPreview({ c }) {
     >
       <div className="flex items-center gap-2 mb-1.5">
         <span className="text-[12px] font-semibold text-gray-700 truncate flex-1">{c.author}</span>
-        <code className="text-[10px] text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded font-mono shrink-0">
+        <code className="text-[11px] text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded font-mono shrink-0">
           {c.short_id}
         </code>
         {c.created_at && (
-          <span className="text-[11px] text-gray-400 shrink-0">{timeAgo(c.created_at)}</span>
+          <span className="text-[11px] text-gray-500 shrink-0">{timeAgo(c.created_at)}</span>
         )}
       </div>
       <div className="text-[13px] leading-snug text-gray-600" style={{ wordBreak: "break-word" }}>
         {c.title}
       </div>
       {c.body && (
-        <div className="mt-1 text-[12px] leading-snug text-gray-400 whitespace-pre-line line-clamp-3">
+        <div className="mt-1 text-[12px] leading-snug text-gray-500 whitespace-pre-line line-clamp-3">
           {c.body}
         </div>
       )}

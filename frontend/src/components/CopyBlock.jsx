@@ -27,7 +27,7 @@ export default function CopyBlock({ title, text }) {
       <pre
         className="font-mono text-[11px] leading-relaxed border border-gray-200 rounded-md p-2 bg-gray-50 text-gray-700 whitespace-pre-wrap break-words"
       >
-        {text || <span className="text-gray-400">Nothing to do</span>}
+        {text || <span className="text-gray-500">Nothing to do</span>}
       </pre>
     </div>
   );

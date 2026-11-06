@@ -4,12 +4,13 @@ import Banner from "../components/Banner";
 import BuildTagDialog from "../components/BuildTagDialog";
 import CopyBlock from "../components/CopyBlock";
 import { Icon, IconSpin } from "../components/icons";
+import PageHeader from "../components/PageHeader";
 
 const STATE_BADGES = {
   new_tag:   { label: "needs tag",  className: "bg-blue-50 text-blue-700",   title: "Some changes aren't in a tag yet. The deploy tag still has to be created." },
   shipped:   { label: "shipped",    className: "bg-green-50 text-green-700", title: "All changes went out in the deploy tag." },
   tagged:    { label: "tag exists", className: "bg-green-50 text-green-700", title: "All changes are in the latest tag, so that tag is what gets deployed." },
-  older_tag: { label: "older tag",  className: "bg-amber-50 text-amber-700", title: "All changes are in a tag, but newer tags exist. Check whether this repo belongs in the plan." },
+  older_tag: { label: "older tag",  className: "bg-amber-50 text-amber-800", title: "All changes are in a tag, but newer tags exist. Check whether this repo belongs in the plan." },
   no_tags:   { label: "no tags",    className: "bg-gray-100 text-gray-600",  title: "GitLab has no vX.Y.Z tags here, so no tag is suggested." },
   error:     { label: "error",      className: "bg-red-50 text-red-700",     title: "The plan for this repo could not be built." },
 };
@@ -23,7 +24,7 @@ const CHANGE_STATE_COLORS = {
   merged:  "text-green-700",
   opened:  "text-amber-700",
   locked:  "text-amber-700",
-  closed:  "text-gray-400 line-through",
+  closed:  "text-gray-500 line-through",
   unknown: "text-red-600",
 };
 
@@ -56,8 +57,8 @@ function releaseTiming(release) {
   if (!release.release_date) return { label: "Not released", className: "bg-gray-100 text-gray-600" };
   const days = daysUntil(release.release_date);
   if (days < 0) return { label: `${-days}d overdue`, className: "bg-red-50 text-red-700" };
-  if (days === 0) return { label: "Today", className: "bg-amber-50 text-amber-700" };
-  if (days === 1) return { label: "Tomorrow", className: "bg-amber-50 text-amber-700" };
+  if (days === 0) return { label: "Today", className: "bg-amber-50 text-amber-800" };
+  if (days === 1) return { label: "Tomorrow", className: "bg-amber-50 text-amber-800" };
   return { label: `In ${days} days`, className: "bg-gray-100 text-gray-600" };
 }
 
@@ -123,7 +124,7 @@ function JiraConnect({ jiraUrl, reason, onConnect }) {
         />
         {shownError && <Banner>{shownError}</Banner>}
         <button type="submit" disabled={loading}
-          className="w-full py-2.5 bg-orange-500 hover:bg-orange-600 text-white text-sm font-semibold rounded-lg transition-colors disabled:opacity-50">
+          className="w-full py-2.5 bg-orange-700 hover:bg-orange-800 text-white text-sm font-semibold rounded-lg transition-colors disabled:opacity-50">
           {loading ? "Connecting…" : "Connect"}
         </button>
       </form>
@@ -149,7 +150,7 @@ function RepoRow({ row, released, onEdit, onReset, onBuild }) {
   const canBuild = !released && row.include && BUILDABLE_STATES.has(row.state) && VERSION_TAG.test(row.deploy_tag ?? "");
   return (
     <>
-      <tr className={`border-t border-gray-100 ${row.include ? "" : "opacity-60"}`}>
+      <tr className={`border-t border-gray-100 ${row.include ? "" : "bg-gray-50"}`}>
         <td className="pl-3 py-2.5 w-8">
           <input
             type="checkbox"
@@ -162,10 +163,10 @@ function RepoRow({ row, released, onEdit, onReset, onBuild }) {
         </td>
         <td className="px-3 py-2.5 min-w-0">
           <a href={row.web_url} target="_blank" rel="noopener noreferrer"
-             className="text-sm font-medium text-gray-900 hover:text-blue-700 hover:underline whitespace-nowrap">
+             className={`text-sm font-medium hover:text-blue-700 hover:underline whitespace-nowrap ${row.include ? "text-gray-900" : "text-gray-600"}`}>
             {row.name}
           </a>
-          <div className="flex flex-wrap gap-x-2 text-[11px] text-gray-400 [&>span]:whitespace-nowrap">
+          <div className="flex flex-wrap gap-x-2 text-[11px] text-gray-500 [&>span]:whitespace-nowrap">
             <span>{row.group}</span>
             <span>{row.issues.length} issue{row.issues.length !== 1 ? "s" : ""}</span>
             {!disabled && (
@@ -217,7 +218,7 @@ function RepoRow({ row, released, onEdit, onReset, onBuild }) {
         </td>
       </tr>
       {(row.error || row.warnings.length > 0 || row.unmerged.length > 0) && (
-        <tr className={row.include ? "" : "opacity-60"}>
+        <tr className={row.include ? "" : "bg-gray-50"}>
           <td />
           <td colSpan={3} className="px-3 pb-2.5 text-[11px] text-amber-700 space-y-0.5">
             {row.error && <div className="text-red-600">{row.error}</div>}
@@ -248,9 +249,9 @@ function IssueRow({ issue }) {
       <div className="flex-1 min-w-0">
         <div className="text-[13px] text-gray-800 truncate" title={issue.summary}>{issue.summary}</div>
         <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
-          {issue.assignee && <span className="text-gray-400">{issue.assignee}</span>}
+          {issue.assignee && <span className="text-gray-500">{issue.assignee}</span>}
           {issue.links.length === 0 && (
-            <span className={issue.in_release ? "text-amber-700" : "text-gray-400"}>no GitLab links</span>
+            <span className={issue.in_release ? "text-amber-700" : "text-gray-500"}>no GitLab links</span>
           )}
           {issue.links.map((link) => (
             <a key={link.url} href={link.url} target="_blank" rel="noopener noreferrer"
@@ -272,7 +273,7 @@ function IssueGroup({ title, note, issues }) {
     <div>
       <div className="mb-1.5 flex flex-wrap items-baseline gap-x-2 text-xs">
         <h4 className="font-medium text-gray-700">{title} · {issues.length}</h4>
-        {note && <span className="text-gray-400">{note}</span>}
+        {note && <span className="text-gray-500">{note}</span>}
       </div>
       <div className="border border-gray-200 rounded-lg bg-white">
         {issues.map((issue) => <IssueRow key={issue.key} issue={issue} />)}
@@ -361,16 +362,16 @@ function ReleaseDetail({ release, filterPaths, jiraUrl, onTokenRejected }) {
   };
 
   return (
-    <div className="p-6 space-y-5 max-w-5xl">
+    <>
       {building && (
         <BuildTagDialog row={building} versionId={release.id} jiraUrl={jiraUrl} onClose={closeBuild} />
       )}
 
-      <div className="flex items-start gap-3">
-        <div className="min-w-0">
-          <h2 className="text-base font-semibold text-gray-900">
-            <a href={release.url} target="_blank" rel="noopener noreferrer" className="hover:text-blue-700 hover:underline">{release.name}</a>
-          </h2>
+      <PageHeader
+        className="sticky top-0 z-20"
+        title={<a href={release.url} target="_blank" rel="noopener noreferrer" className="hover:text-blue-700 hover:underline">{release.name}</a>}
+        subtitle={
+          <>
           <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-500">
             <StatusBadge className={timing.className}>{timing.label}</StatusBadge>
             {date && <span>{date}</span>}
@@ -389,7 +390,9 @@ function ReleaseDetail({ release, filterPaths, jiraUrl, onTokenRejected }) {
               {toCheck > 0 && <> · <span className="font-medium text-amber-700">{toCheck} to check</span></>}
             </p>
           )}
-        </div>
+          </>
+        }
+      >
         <button
           onClick={reload}
           disabled={loading}
@@ -399,12 +402,13 @@ function ReleaseDetail({ release, filterPaths, jiraUrl, onTokenRejected }) {
           {loading ? <IconSpin className="w-3.5 h-3.5" /> : <Icon name="refresh" />}
           Refresh
         </button>
-      </div>
+      </PageHeader>
 
+    <div className="p-6 space-y-5 max-w-5xl">
       {error && <Banner onRetry={reload}>{error}</Banner>}
 
       {loading && !plan && (
-        <div className="flex items-center gap-2 text-sm text-gray-400 py-10 justify-center">
+        <div className="flex items-center gap-2 text-sm text-gray-500 py-10 justify-center">
           <IconSpin className="w-4 h-4" /> Collecting issues, merge requests and tags…
         </div>
       )}
@@ -418,7 +422,7 @@ function ReleaseDetail({ release, filterPaths, jiraUrl, onTokenRejected }) {
           <section>
             <h3 className={`${SECTION_TITLE} mb-2`}>Repositories</h3>
             {rows.length === 0 ? (
-              <p className="text-sm text-gray-400 border border-gray-200 rounded-lg bg-white py-8 text-center">
+              <p className="text-sm text-gray-500 border border-gray-200 rounded-lg bg-white py-8 text-center">
                 {hiddenRepos.length > 0
                   ? "All repositories in this release are outside your project filter."
                   : "No GitLab changes found on the issues in this release."}
@@ -427,7 +431,7 @@ function ReleaseDetail({ release, filterPaths, jiraUrl, onTokenRejected }) {
               <div className="border border-gray-200 rounded-lg bg-white overflow-x-auto">
                 <table className="w-full text-left">
                   <thead>
-                    <tr className="text-[11px] text-gray-400">
+                    <tr className="text-[11px] text-gray-500">
                       <th />
                       <th className="px-3 py-2 font-medium">Repository</th>
                       <th className="px-2 py-2 font-medium">Rollback → Deploy</th>
@@ -464,12 +468,13 @@ function ReleaseDetail({ release, filterPaths, jiraUrl, onTokenRejected }) {
             <IssueGroup title="In the release" issues={inRelease} />
             <IssueGroup title="Other statuses" note={statusCounts(otherIssues)} issues={otherIssues} />
             {issues.length === 0 && (
-              <p className="text-sm text-gray-400 border border-gray-200 rounded-lg bg-white py-8 text-center">No issues to show</p>
+              <p className="text-sm text-gray-500 border border-gray-200 rounded-lg bg-white py-8 text-center">No issues to show</p>
             )}
           </section>
         </>
       )}
     </div>
+    </>
   );
 }
 
@@ -525,7 +530,7 @@ export default function Releases({ jiraUrl, connected, onConnected, projects, se
   const selected = releases.find((r) => r.id === selectedId);
 
   const tabClass = (active) => `flex-1 text-xs font-medium py-1 rounded transition-colors ${
-    active ? "bg-white shadow-sm text-gray-900" : "text-gray-500 hover:text-gray-700"
+    active ? "bg-white shadow-sm text-gray-900" : "text-gray-600 hover:text-gray-800"
   }`;
 
   return (
@@ -553,7 +558,7 @@ export default function Releases({ jiraUrl, connected, onConnected, projects, se
                   <span className="flex-1 min-w-0 text-sm text-gray-900 truncate" title={r.name}>{r.name}</span>
                   {!r.released && <StatusBadge className={`shrink-0 ${timing.className}`}>{timing.label}</StatusBadge>}
                 </div>
-                <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-gray-400 min-w-0">
+                <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-gray-600 min-w-0">
                   {date && <span className="font-mono shrink-0">{date}</span>}
                   {r.release_issue && <span className="font-mono shrink-0">{r.release_issue}</span>}
                   {r.release_issue_status?.status && <span className="truncate">· {r.release_issue_status.status}</span>}
@@ -562,7 +567,7 @@ export default function Releases({ jiraUrl, connected, onConnected, projects, se
             );
           })}
           {list && shown.length === 0 && (
-            <p className="text-center py-8 text-xs text-gray-400">No releases here</p>
+            <p className="text-center py-8 text-xs text-gray-500">No releases here</p>
           )}
         </div>
       </div>
@@ -570,7 +575,7 @@ export default function Releases({ jiraUrl, connected, onConnected, projects, se
       <div className="flex-1 min-w-0 overflow-auto">
         {error && <Banner onRetry={loadList} className="m-6">{error}</Banner>}
         {!list && !error && (
-          <div className="flex items-center gap-2 text-sm text-gray-400 py-16 justify-center">
+          <div className="flex items-center gap-2 text-sm text-gray-500 py-16 justify-center">
             <IconSpin className="w-4 h-4" /> Loading releases…
           </div>
         )}

@@ -56,11 +56,11 @@ export default function AccountForm({ onSuccess, onCancel }) {
             className={`${INPUT} pr-14 font-mono`}
           />
           <button type="button" onClick={() => setShowToken((s) => !s)}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400 hover:text-gray-600">
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-500 hover:text-gray-600">
             {showToken ? "Hide" : "Show"}
           </button>
         </div>
-        <p className="mt-1 text-[11px] text-gray-400">
+        <p className="mt-1 text-[11px] text-gray-500">
           Needs <code className="bg-gray-100 px-1 rounded">api</code> scope.{" "}
           <code className="bg-gray-100 px-1 rounded">read_api</code> can view MRs, but approving and To-Do actions won't work.
         </p>
@@ -68,7 +68,7 @@ export default function AccountForm({ onSuccess, onCancel }) {
 
       <div>
         <label className="block text-xs font-medium text-gray-700 mb-1">
-          Label <span className="font-normal text-gray-400">(optional)</span>
+          Label <span className="font-normal text-gray-500">(optional)</span>
         </label>
         <input
           type="text" value={label} onChange={(e) => setLabel(e.target.value)}
@@ -89,7 +89,7 @@ export default function AccountForm({ onSuccess, onCancel }) {
           </button>
         )}
         <button type="submit" disabled={loading}
-          className="flex-1 py-2.5 bg-orange-500 hover:bg-orange-600 text-white text-sm font-semibold rounded-lg transition-colors disabled:opacity-50">
+          className="flex-1 py-2.5 bg-orange-700 hover:bg-orange-800 text-white text-sm font-semibold rounded-lg transition-colors disabled:opacity-50">
           {loading ? "Connecting…" : "Connect"}
         </button>
       </div>

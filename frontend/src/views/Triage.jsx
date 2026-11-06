@@ -1,16 +1,20 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { BUCKETS } from "../constants";
 import { api } from "../api";
 import { classifyMR } from "../utils/classifyMR";
 import { timeAgo } from "../utils/timeAgo";
-import { BucketIcon, IconSpin } from "../components/icons";
+import { IconSpin } from "../components/icons";
 import { Button } from "@/components/ui/button";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import Banner from "../components/Banner";
 import BucketSection from "../components/BucketSection";
+import PageHeader from "../components/PageHeader";
 import RefreshButton from "../components/RefreshButton";
 
 const BUCKET_IDS = ["needs", "approved", "mine", "mention"];
+
+// On a wide screen: what still wants something from you on the left, what you've dealt with on the right.
+const ACTION_BUCKETS = ["needs", "mine", "mention"];
+const DONE_BUCKETS = ["approved"];
 
 const approvalUrl = (mr, action) => `/api/merge-requests/${mr.project_id}/${mr.iid}/${action}`;
 
@@ -31,6 +35,10 @@ export default function Triage({ data, loading, error, currentUser, view, refres
   const [sortBy, setSortBy]           = useState("newest");
 
   useEffect(() => { setSelectedIds(new Set()); }, [view.bucket]);
+
+  // The chosen group moves to the top, which is no use if the list stays scrolled further down.
+  const mainRef = useRef(null);
+  useEffect(() => { mainRef.current?.scrollTo?.({ top: 0 }); }, [view.bucket]);
 
   const toggleOne = (id) => setSelectedIds((prev) => {
     const next = new Set(prev);
@@ -75,7 +83,9 @@ export default function Triage({ data, loading, error, currentUser, view, refres
     return out;
   }, [all, currentUser, mentionedMRs, sortFn, searchQuery]);
 
+  // The group picked in the sidebar goes first: in the one list, or within its column.
   const order = [view.bucket, ...BUCKET_IDS.filter((k) => k !== view.bucket)];
+  const inOrder = (ids) => order.filter((id) => ids.includes(id));
 
   const allVisible = BUCKET_IDS.flatMap((id) => classified[id]);
   const allSelected = allVisible.length > 0 && allVisible.every((mr) => selectedIds.has(mr.id));
@@ -138,25 +148,30 @@ export default function Triage({ data, loading, error, currentUser, view, refres
   };
 
   const warnings = data?.warnings ?? [];
+
+  const section = (id) => (
+    <div key={id} style={{ order: order.indexOf(id) }}>
+      <BucketSection bucket={BUCKETS[id]} mrs={classified[id]} hint={hints[id]}
+                     selectedIds={selectedIds} onToggle={toggleOne}
+                     dataLoaded={data !== null && currentUser !== null}
+                     partial={warnings.length > 0}
+                     searchActive={searchQuery.trim().length > 0} />
+    </div>
+  );
+
   const openCount = all.filter((m) => m.state === "opened").length;
 
   return (
-    <main className="flex-1 overflow-auto">
+    <main ref={mainRef} className="flex-1 overflow-auto">
       <div className="sticky top-0 z-20">
-        <header className="px-5 py-3.5 border-b border-gray-200 flex items-center gap-3 bg-white shrink-0">
-          <BucketIcon id={view.bucket} className="w-5 h-5 text-orange-600 shrink-0" />
-          <div className="min-w-0">
-            <h2 className="text-sm font-semibold text-gray-900">{BUCKETS[view.bucket].label}</h2>
-            <p className="text-xs text-gray-500">
-              {`${openCount} open merge request${openCount !== 1 ? "s" : ""} grouped by what needs your attention`}
-            </p>
-          </div>
-          <div className="ml-auto shrink-0">
-            <RefreshButton onRefresh={refresh} loading={loading} interval={autoRefreshSecs} onIntervalChange={onAutoRefreshChange} />
-          </div>
-        </header>
+        <PageHeader
+          title="Open merge requests"
+          subtitle={`${openCount} grouped by what needs your attention`}
+        >
+          <RefreshButton onRefresh={refresh} loading={loading} interval={autoRefreshSecs} onIntervalChange={onAutoRefreshChange} />
+        </PageHeader>
 
-        <div className="px-5 py-2 bg-gray-50 border-b border-gray-200 flex items-center gap-2 text-xs text-gray-500">
+        <div className="px-5 py-2 min-h-10 bg-gray-50 border-b border-gray-200 flex items-center gap-2 text-xs text-gray-500">
           <input
             type="checkbox"
             checked={allSelected}
@@ -166,54 +181,47 @@ export default function Triage({ data, loading, error, currentUser, view, refres
           <span className="text-gray-700 font-medium cursor-pointer select-none" onClick={toggleAll}>
             {selectedIds.size > 0 ? `${selectedIds.size} selected` : "Select all"}
           </span>
-          <span className="w-px h-3.5 bg-gray-300 mx-0.5" />
-          {doneMsg ? (
-            <span className="text-green-600 font-medium text-xs animate-in fade-in duration-200">{doneMsg}</span>
-          ) : (
+          {doneMsg && <span className="ml-1 text-green-600 font-medium text-xs animate-in fade-in duration-200">{doneMsg}</span>}
+          {!doneMsg && selected.length > 0 && (
             <>
-              <Button
-                size="xs"
-                onClick={() => runBulk("approve", toApprove, (mr) => api.post(approvalUrl(mr, "approve")), "Approved")}
-                disabled={toApprove.length === 0 || busy !== null}
-                variant="ghost"
-              >
-                {busy === "approve" ? <IconSpin /> : "✓"} Approve
-              </Button>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span className="inline-flex">
-                    <Button variant="ghost" size="xs" disabled={toReapprove.length === 0 || busy !== null}
-                      onClick={() => runBulk("reapprove", toReapprove, reapprove, "Re-approved")}
-                      className="text-amber-700 hover:bg-amber-100 hover:text-amber-700">
-                      {busy === "reapprove" ? <IconSpin /> : "↺"} Re-approve
-                    </Button>
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">
-                  {toReapprove.length > 0
-                    ? "Re-approve selected MRs that were updated after your approval"
-                    : "Select MRs with new activity after your approval"}
-                </TooltipContent>
-              </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span className="inline-flex">
-                    <Button variant="ghost" size="xs" disabled={toUnapprove.length === 0 || busy !== null}
-                      onClick={() => runBulk("unapprove", toUnapprove, (mr) => api.post(approvalUrl(mr, "unapprove")), "Unapproved")}
-                      className="text-red-600 hover:bg-red-50 hover:text-red-600">
-                      {busy === "unapprove" ? <IconSpin /> : "✕"} Unapprove
-                    </Button>
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">
-                  {toUnapprove.length > 0
-                    ? "Withdraw your approval from selected MRs"
-                    : "Select MRs you have already approved"}
-                </TooltipContent>
-              </Tooltip>
+              <span className="w-px h-3.5 bg-gray-300 mx-0.5" />
+              {toApprove.length > 0 && (
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  disabled={busy !== null}
+                  onClick={() => runBulk("approve", toApprove, (mr) => api.post(approvalUrl(mr, "approve")), "Approved")}
+                >
+                  {busy === "approve" ? <IconSpin /> : "✓"} Approve · {toApprove.length}
+                </Button>
+              )}
+              {toReapprove.length > 0 && (
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  title="Withdraw your approval and approve again, after what changed since"
+                  disabled={busy !== null}
+                  onClick={() => runBulk("reapprove", toReapprove, reapprove, "Re-approved")}
+                  className="text-amber-700 hover:bg-amber-100 hover:text-amber-700"
+                >
+                  {busy === "reapprove" ? <IconSpin /> : "↺"} Re-approve · {toReapprove.length}
+                </Button>
+              )}
+              {toUnapprove.length > 0 && (
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  title="Withdraw your approval"
+                  disabled={busy !== null}
+                  onClick={() => runBulk("unapprove", toUnapprove, (mr) => api.post(approvalUrl(mr, "unapprove")), "Unapproved")}
+                  className="text-red-600 hover:bg-red-50 hover:text-red-600"
+                >
+                  {busy === "unapprove" ? <IconSpin /> : "✕"} Unapprove · {toUnapprove.length}
+                </Button>
+              )}
             </>
           )}
-          <div className="ml-auto flex items-center gap-1.5 text-gray-400">
+          <div className="ml-auto flex items-center gap-1.5 text-gray-500">
             <span>Sort:</span>
             <select
               value={sortBy}
@@ -248,21 +256,16 @@ export default function Triage({ data, loading, error, currentUser, view, refres
         </Banner>
       )}
 
-      {/* Two columns on 2xl. Deliberately CSS multi-column rather than a 2-col
-          grid: a grid ties both cells of a row to the taller one, which is what
-          left the big blank gaps under the shorter bucket. The divider is a
-          column-rule, not a background showing through the gap — a background
-          would paint the tail of the shorter column grey. */}
-      <div className="bg-white 2xl:columns-2 2xl:gap-px 2xl:[column-rule:1px_solid_#e5e7eb]">
-        {order.map((id) => (
-          <div key={id} className="break-inside-avoid">
-            <BucketSection bucket={BUCKETS[id]} mrs={classified[id]} hint={hints[id]}
-                           selectedIds={selectedIds} onToggle={toggleOne}
-                           dataLoaded={data !== null && currentUser !== null}
-                           partial={warnings.length > 0}
-                           searchActive={searchQuery.trim().length > 0} />
-          </div>
-        ))}
+      {/* Two columns only from 1800px: a row's fixed columns take about 560px, so any
+          narrower and half the page leaves too little room to read a title. Below that
+          the columns dissolve (display: contents) into one list, in the order set above. */}
+      <div className="bg-white flex flex-col min-[1800px]:flex-row">
+        <div className="contents min-[1800px]:block min-w-0 min-[1800px]:flex-1 min-[1800px]:border-r min-[1800px]:border-gray-200">
+          {inOrder(ACTION_BUCKETS).map(section)}
+        </div>
+        <div className="contents min-[1800px]:block min-w-0 min-[1800px]:flex-1">
+          {inOrder(DONE_BUCKETS).map(section)}
+        </div>
       </div>
     </main>
   );

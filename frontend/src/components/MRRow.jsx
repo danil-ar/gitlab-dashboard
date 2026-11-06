@@ -45,7 +45,7 @@ function CopyMessage({ mr }) {
       onClick={onClick}
       title="Copy the review announcement for chat"
       className={`shrink-0 p-1 rounded transition-opacity ${
-        copied ? "opacity-100 text-green-600" : "opacity-0 group-hover:opacity-100 text-gray-400 hover:text-gray-700"
+        copied ? "opacity-100 text-green-600" : "opacity-50 group-hover:opacity-100 focus-visible:opacity-100 text-gray-500 hover:text-gray-700"
       }`}
     >
       {copied ? (
@@ -59,6 +59,30 @@ function CopyMessage({ mr }) {
         </svg>
       )}
     </button>
+  );
+}
+
+// Shared by the rows and the header above them, or the labels would drift off their columns.
+const COLUMN = {
+  size:      "w-[88px] hidden lg:flex justify-end",
+  pipeline:  "w-[72px] hidden md:flex",
+  threads:   "w-[48px] hidden md:flex",
+  approvals: "w-[96px] hidden md:flex items-center gap-1.5",
+  assignee:  "w-[52px] hidden lg:flex -space-x-1.5",
+  updated:   "w-[56px] flex justify-end",
+};
+
+/** Column names, laid out to sit over the row's cells. Goes at the right end of a row with the same side padding. */
+export function MRColumns({ className = "" }) {
+  return (
+    <div className={`flex items-center gap-3 text-[11px] font-normal text-gray-500 whitespace-nowrap ${className}`}>
+      <span className={`${COLUMN.size} shrink-0`}>Changes</span>
+      <span className={`${COLUMN.pipeline} shrink-0`}>Pipeline</span>
+      <span className={`${COLUMN.threads} shrink-0`}>Threads</span>
+      <span className={`${COLUMN.approvals} shrink-0`}>Approved by</span>
+      <span className={`${COLUMN.assignee} shrink-0`}>Assignee</span>
+      <span className={`${COLUMN.updated} shrink-0`}>Updated</span>
+    </div>
   );
 }
 
@@ -82,7 +106,7 @@ export default function MRRow({ mr, bucket, selected, onToggle }) {
         <input type="checkbox" checked={!!selected} onChange={() => onToggle(mr.id)} className="w-4 h-4 rounded shrink-0 accent-blue-600 cursor-pointer" />
       )}
 
-      <Icon name="mr" className={`w-4 h-4 shrink-0 ${isDraft ? "text-gray-400" : "text-green-600"}`} />
+      <Icon name="mr" className={`w-4 h-4 shrink-0 ${isDraft ? "text-gray-500" : "text-green-600"}`} />
 
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5 min-w-0">
@@ -117,7 +141,7 @@ export default function MRRow({ mr, bucket, selected, onToggle }) {
                   <div className="p-2.5 space-y-3">
                     {activities.commits?.length > 0 && (
                       <div>
-                        <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-amber-600 mb-1.5">
+                        <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-amber-600 mb-1.5">
                           <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
                           New commits · {activities.commits.length}
                         </div>
@@ -128,7 +152,7 @@ export default function MRRow({ mr, bucket, selected, onToggle }) {
                     )}
                     {previews.length > 0 && (
                       <div className={activities.commits?.length > 0 ? "border-t border-gray-100 pt-2.5" : ""}>
-                        <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-orange-500 mb-1.5">
+                        <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-orange-500 mb-1.5">
                           <span className="w-1.5 h-1.5 rounded-full bg-orange-500 shrink-0" />
                           New discussion · {previews.length}
                         </div>
@@ -179,13 +203,13 @@ export default function MRRow({ mr, bucket, selected, onToggle }) {
               // cut, when a label name is genuinely long, happens on the text
               // inside, where text-overflow works.
               <Badge key={title} variant="outline" style={style}
-                     className="max-w-[9rem] text-[10px] text-gray-500 h-4 px-1.5 py-0">
+                     className="max-w-[9rem] text-[11px] text-gray-500 h-4 px-1.5 py-0">
                 <span className="truncate">{title}</span>
               </Badge>
             );
           })}
           {mr.labels?.length > 1 && (
-            <span className="text-[10px] text-gray-400 shrink-0 cursor-help"
+            <span className="text-[11px] text-gray-500 shrink-0 cursor-help"
                   title={mr.labels.slice(1).map((l) => (typeof l === "string" ? l : l.title)).join("\n")}>
               +{mr.labels.length - 1}
             </span>
@@ -193,7 +217,7 @@ export default function MRRow({ mr, bucket, selected, onToggle }) {
           <CopyMessage mr={mr} />
         </div>
         <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-gray-500 min-w-0 flex-nowrap overflow-hidden">
-          <span className="font-mono shrink-0 truncate max-w-[200px]">{proj}<span className="text-gray-400">!{mr.iid}</span></span>
+          <span className="font-mono shrink-0 truncate max-w-[200px]">{proj}<span className="text-gray-500">!{mr.iid}</span></span>
           <span className="text-gray-300 shrink-0">·</span>
           {/* The one thing on this line that can lose its tail and still be
               understood: "Богданов Ярослав А…" names the same person, while a
@@ -206,33 +230,33 @@ export default function MRRow({ mr, bucket, selected, onToggle }) {
             {issueUrl(mr) ? (
               <a href={issueUrl(mr)} target="_blank" rel="noopener noreferrer"
                  title="Open the issue in the tracker"
-                 className="bg-gray-100 hover:bg-blue-50 hover:text-blue-700 px-1 rounded text-[10px] max-w-[100px] truncate font-mono transition-colors">
+                 className="bg-gray-100 text-gray-600 hover:bg-blue-50 hover:text-blue-700 px-1 rounded text-[11px] max-w-[100px] truncate font-mono transition-colors">
                 {mr.source_branch}
               </a>
             ) : (
-              <code className="bg-gray-100 px-1 rounded text-[10px] max-w-[100px] truncate">{mr.source_branch}</code>
+              <code className="bg-gray-100 text-gray-600 px-1 rounded text-[11px] max-w-[100px] truncate">{mr.source_branch}</code>
             )}
-            <span className="text-gray-400">→</span>
-            <code className="bg-gray-100 px-1 rounded text-[10px]">{mr.target_branch}</code>
+            <span className="text-gray-500">→</span>
+            <code className="bg-gray-100 text-gray-600 px-1 rounded text-[11px]">{mr.target_branch}</code>
           </span>
         </div>
       </div>
 
       {/* Its own column, not part of the meta line: sizes are only worth showing
           if you can compare them down the list at a glance. */}
-      <div className="w-[88px] hidden lg:flex justify-end shrink-0 text-[11px]">
+      <div className={`${COLUMN.size} shrink-0 text-[11px]`}>
         <DiffSize stats={mr.diff_stats} />
       </div>
 
-      <div className="w-[72px] hidden md:flex shrink-0">
+      <div className={`${COLUMN.pipeline} shrink-0`}>
         <PipelineStatus pipeline={mr.pipeline} />
       </div>
 
-      <div className="w-[48px] hidden md:flex shrink-0">
+      <div className={`${COLUMN.threads} shrink-0`}>
         <ThreadsStatus stats={mr.discussion_stats} projectId={mr.project_id} iid={mr.iid} updatedAt={mr.updated_at} mrUrl={mr.web_url} />
       </div>
 
-      <div className="w-[96px] hidden md:flex items-center gap-1.5 shrink-0">
+      <div className={`${COLUMN.approvals} shrink-0`}>
         {mr.approved_by_users?.length > 0 ? (
           <>
             <span className="flex -space-x-1.5">
@@ -245,21 +269,21 @@ export default function MRRow({ mr, bucket, selected, onToggle }) {
             <span className="text-xs text-green-700 font-semibold tabular-nums">{mr.approved_by_users.length}</span>
           </>
         ) : (
-          <span className="text-[11px] text-gray-400" title={mr.approved_by_users === null ? "Could not load the approvals" : "No approvals yet"}>
+          <span className="text-[11px] text-gray-500" title={mr.approved_by_users === null ? "Could not load the approvals" : "No approvals yet"}>
             {mr.approved_by_users === null ? "unknown" : "—"}
           </span>
         )}
       </div>
 
-      <div className="w-[44px] hidden lg:flex -space-x-1.5 shrink-0">
+      <div className={`${COLUMN.assignee} shrink-0`}>
         {mr.assignees?.slice(0, 2).map((a) => (
           <span key={a.id} className="ring-2 ring-white rounded-full"><Avatar user={a} showTooltip /></span>
         ))}
-        {!mr.assignees?.length && <span className="text-[11px] text-gray-400">—</span>}
+        {!mr.assignees?.length && <span className="text-[11px] text-gray-500">—</span>}
       </div>
 
-      <span className={`w-[56px] text-right text-[11px] tabular-nums shrink-0 ${
-        isStale(mr.updated_at) ? "text-gray-600 font-medium" : "text-gray-400"
+      <span className={`${COLUMN.updated} text-[11px] tabular-nums shrink-0 ${
+        isStale(mr.updated_at) ? "text-gray-600 font-medium" : "text-gray-500"
       }`}>
         {timeAgo(mr.updated_at)}
       </span>

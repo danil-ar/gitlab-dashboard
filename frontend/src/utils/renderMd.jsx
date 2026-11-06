@@ -13,9 +13,9 @@ export function renderMd(text) {
     if (/^(_|\*)[^_*]+(_|\*)$/.test(seg))
       return <em key={i} className="italic">{seg.slice(1, -1)}</em>;
     if (/^@\w[\w.-]*$/.test(seg))
-      return <span key={i} className="text-blue-500 font-medium">{seg}</span>;
+      return <span key={i} className="text-blue-700 font-medium">{seg}</span>;
     if (/^#\d+$/.test(seg))
-      return <span key={i} className="text-blue-500 font-mono">{seg}</span>;
+      return <span key={i} className="text-blue-700 font-mono">{seg}</span>;
     return seg;
   });
 }

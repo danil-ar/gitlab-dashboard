@@ -9,8 +9,8 @@ export default function AboutModal({ onClose }) {
           ⌘
         </span>
         <div>
-          <h2 className="text-base font-semibold text-gray-900">GitLab MRs</h2>
-          <p className="text-xs text-gray-400 font-mono mt-0.5">v{__APP_VERSION__}</p>
+          <h2 className="text-base font-semibold text-gray-900">GitLab Dashboard</h2>
+          <p className="text-xs text-gray-500 font-mono mt-0.5">v{__APP_VERSION__}</p>
         </div>
       </div>
 
@@ -43,7 +43,7 @@ export default function AboutModal({ onClose }) {
       {/* Stack */}
       <div className="px-6 py-3 flex items-center gap-2 flex-wrap">
         {["React", "Vite", "Tailwind", "FastAPI", "GitLab API"].map((t) => (
-          <span key={t} className="text-[10px] font-mono px-2 py-0.5 bg-gray-100 text-gray-500 rounded-full">{t}</span>
+          <span key={t} className="text-[11px] font-mono px-2 py-0.5 bg-gray-100 text-gray-500 rounded-full">{t}</span>
         ))}
       </div>
 

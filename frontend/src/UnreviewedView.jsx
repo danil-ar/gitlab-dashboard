@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { api } from "./api";
 import Banner from "./components/Banner";
+import PageHeader from "./components/PageHeader";
 import RefreshButton from "./components/RefreshButton";
 import { timeAgo } from "./utils/timeAgo";
 
@@ -34,9 +35,9 @@ function Section({ title, hint, rows, accent, renderRow, keyOf }) {
     <div>
       <div className="flex items-center gap-2 mb-1.5">
         <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${accent}`} />
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">{title}</span>
-        <span className="text-[11px] text-gray-400 tabular-nums">{rows.length}</span>
-        <span className="text-[11px] text-gray-400 truncate">· {hint}</span>
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">{title}</span>
+        <span className="text-[11px] text-gray-500 tabular-nums">{rows.length}</span>
+        <span className="text-[11px] text-gray-500 truncate">· {hint}</span>
       </div>
       <div className="space-y-3">
         {byProject(rows).map(([project, group]) => (
@@ -51,7 +52,7 @@ function Section({ title, hint, rows, accent, renderRow, keyOf }) {
               ) : (
                 <span className="font-mono text-[11px] text-gray-600 truncate">{project}</span>
               )}
-              <span className="text-[11px] text-gray-400 tabular-nums">{group.length}</span>
+              <span className="text-[11px] text-gray-500 tabular-nums">{group.length}</span>
             </div>
             {group.map((row) => <div key={keyOf(row)}>{renderRow(row)}</div>)}
           </div>
@@ -81,7 +82,7 @@ function BranchRow({ b }) {
           {b.commit_title && <><span className="text-gray-300 shrink-0">·</span><span className="truncate">{b.commit_title}</span></>}
         </div>
       </div>
-      <span className="text-[11px] text-gray-400 tabular-nums shrink-0">{timeAgo(b.pushed_at)}</span>
+      <span className="text-[11px] text-gray-500 tabular-nums shrink-0">{timeAgo(b.pushed_at)}</span>
       {b.create_mr_url && (
         <a href={b.create_mr_url} target="_blank" rel="noopener noreferrer"
            className="shrink-0 text-xs px-2.5 py-1.5 rounded-md bg-blue-600 hover:bg-blue-700 text-white font-medium transition-colors">
@@ -98,17 +99,17 @@ function CommitRow({ c }) {
        className={`${rowClass} relative before:content-[''] before:absolute before:inset-y-0 before:left-0 before:w-1 before:bg-amber-400`}>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5 min-w-0">
-          <code className="text-[10px] text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded font-mono shrink-0">{c.short_id}</code>
+          <code className="text-[11px] text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded font-mono shrink-0">{c.short_id}</code>
           <span className="text-sm text-gray-800 truncate">{c.title}</span>
         </div>
         <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-gray-500 min-w-0 flex-nowrap overflow-hidden">
           {c.branches?.map((name) => (
-            <code key={name} className="bg-gray-100 px-1 rounded text-[10px] shrink-0">{name}</code>
+            <code key={name} className="bg-gray-100 text-gray-600 px-1 rounded text-[11px] shrink-0">{name}</code>
           ))}
           {c.author && <><span className="text-gray-300 shrink-0">·</span><span className="shrink-0 truncate">by {c.author}</span></>}
         </div>
       </div>
-      <span className="text-[11px] text-gray-400 tabular-nums shrink-0">{timeAgo(c.created_at)}</span>
+      <span className="text-[11px] text-gray-500 tabular-nums shrink-0">{timeAgo(c.created_at)}</span>
     </a>
   );
 }
@@ -144,23 +145,21 @@ export default function UnreviewedView({ selectedProjectIds, onCount }) {
 
   return (
     <main className="flex-1 overflow-auto">
-      <div className="max-w-5xl mx-auto px-6 py-6 space-y-5">
-        <div className="flex items-center gap-3">
-          <div>
-            <p className="text-sm font-semibold text-gray-900">No merge request</p>
-            <p className="text-xs text-gray-500 mt-0.5">Work from the last two weeks that no review has seen</p>
-          </div>
-          <div className="ml-auto shrink-0">
-            <RefreshButton onRefresh={() => load(true)} loading={loading} />
-          </div>
-        </div>
+      <PageHeader
+        className="sticky top-0 z-20"
+        title="No merge request"
+        subtitle="Work from the last two weeks that no review has seen"
+      >
+        <RefreshButton onRefresh={() => load(true)} loading={loading} />
+      </PageHeader>
 
+      <div className="max-w-5xl mx-auto px-6 py-6 space-y-5">
         {error && <Banner onRetry={() => load(true)}>{error}</Banner>}
 
         {error && total === 0 ? null : total === 0 && !loading ? (
           <div className="text-center py-20">
             <p className="text-sm text-gray-700 font-semibold">Everything went through review</p>
-            <p className="text-xs text-gray-400 mt-1">No stray branches, nothing pushed straight to a protected branch.</p>
+            <p className="text-xs text-gray-500 mt-1">No stray branches, nothing pushed straight to a protected branch.</p>
           </div>
         ) : (
           <>

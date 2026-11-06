@@ -1,10 +1,3 @@
-export const STATE_OPTS = [
-  { value: "opened", label: "Open" },
-  { value: "merged", label: "Merged" },
-  { value: "closed", label: "Closed" },
-  { value: "all",    label: "All states" },
-];
-
 export const SCOPE_OPTS = [
   { value: "all",             label: "All MRs" },
   { value: "created_by_me",   label: "Created by me" },
@@ -38,7 +31,7 @@ export const MERGE_STATUS = {
 export const STALE_DAYS = 30;
 
 export const BUCKETS = {
-  needs:    { id: "needs",    label: "Needs your review",         description: "Open MRs in your projects you haven't approved yet", accentBar: "before:bg-orange-500", iconColor: "text-orange-600", pillBg: "bg-orange-500 text-white",        headerBg: "bg-orange-50/60" },
+  needs:    { id: "needs",    label: "Needs your review",         description: "Open MRs in your projects you haven't approved yet", accentBar: "before:bg-orange-500", iconColor: "text-orange-600", pillBg: "bg-orange-700 text-white",        headerBg: "bg-orange-50/60" },
   approved: { id: "approved", label: "You approved",             description: "You approved, but the MR is still waiting to merge", accentBar: "before:bg-green-500",  iconColor: "text-green-600",  pillBg: "bg-green-100 text-green-700",     headerBg: "bg-green-50/60"  },
   mine:     { id: "mine",     label: "Your open MRs",             description: "MRs you created that are still open",           accentBar: "before:bg-blue-500",   iconColor: "text-blue-600",   pillBg: "bg-blue-100 text-blue-700",       headerBg: "bg-blue-50/60"   },
   mention:  { id: "mention",  label: "Mentioned you",             description: "MRs where you were tagged that are not already in a bucket above",     accentBar: "before:bg-purple-400", iconColor: "text-purple-500", pillBg: "bg-purple-100 text-purple-700",   headerBg: "bg-purple-50/60" },
