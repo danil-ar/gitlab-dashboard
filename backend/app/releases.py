@@ -1,13 +1,12 @@
 """Release plans and tag builds: from a Jira version to the GitLab tags to deploy and roll back to."""
 import asyncio
 import re
-from collections import Counter
 from urllib.parse import quote
 
 from fastapi import HTTPException
 
 from . import release_plan
-from .config import JIRA_PROJECT, JIRA_RELEASE_STATUS, JIRA_URL
+from .config import JIRA_PROJECT, JIRA_RELEASE_STATUS, JIRA_URL, log
 from .gitlab import GL, gather_settled, why
 from .jira import Jira
 
@@ -17,6 +16,27 @@ _RELEASE_SOURCE_BRANCH = "develop"
 _RELEASE_TARGET_BRANCHES = ("master", "main")  # the first one that exists
 _MERGE_CHECK_ATTEMPTS = 8  # GitLab works out mergeability in the background after an MR is created
 _MERGE_CHECK_DELAY = 1  # seconds
+
+
+def _status_of(fields: dict) -> dict:
+    """Jira's status and its category: new, indeterminate or done, the same in every workflow."""
+    status = fields.get("status") or {}
+    return {"status": status.get("name"), "status_category": (status.get("statusCategory") or {}).get("key")}
+
+
+async def _release_issue_statuses(jira: Jira, keys: list[str]) -> dict[str, dict]:
+    """Status of each release's own issue (REL-2169). It only adds detail, so failing to read it mustn't cost the list."""
+    if not keys:
+        return {}
+    try:
+        page = await jira.get("/search", {
+            # validateQuery=false: a release naming an issue that no longer exists mustn't fail all the others.
+            "jql": f"key in ({','.join(keys)})", "fields": "status", "maxResults": len(keys), "validateQuery": "false",
+        })
+    except HTTPException as e:
+        log.warning("could not read release issue statuses: %s", e.detail)
+        return {}
+    return {i["key"]: _status_of(i["fields"]) for i in page.get("issues", [])}
 
 
 async def list_releases(jira: Jira) -> dict:
@@ -38,6 +58,10 @@ async def list_releases(jira: Jira) -> dict:
     # Upcoming first with the nearest on top, then shipped with the latest on top.
     upcoming = sorted((r for r in releases if not r["released"]), key=lambda r: r["release_date"] or "9999")
     shipped = sorted((r for r in releases if r["released"]), key=lambda r: r["release_date"] or "", reverse=True)
+    # Only upcoming ones: the shipped list only grows, and for those "released" says what matters.
+    statuses = await _release_issue_statuses(jira, [r["release_issue"] for r in upcoming if r["release_issue"]])
+    for r in releases:
+        r["release_issue_status"] = statuses.get(r["release_issue"])
     return {"project": JIRA_PROJECT, "status": JIRA_RELEASE_STATUS, "releases": upcoming + shipped}
 
 
@@ -152,11 +176,8 @@ async def _plan_for_repo(gl: GL, path: str, changes: list[dict]) -> dict:
 
 async def build_plan(jira: Jira, gl: GL, version_id: int) -> dict:
     wanted = JIRA_RELEASE_STATUS.casefold()
-    all_issues = await _version_issues(jira, version_id)
-    issues = [i for i in all_issues if i["fields"]["status"]["name"].casefold() == wanted]
-    other_statuses = Counter(
-        i["fields"]["status"]["name"] for i in all_issues if i["fields"]["status"]["name"].casefold() != wanted
-    )
+    issues = await _version_issues(jira, version_id)
+    in_release = {i["key"] for i in issues if i["fields"]["status"]["name"].casefold() == wanted}
     warnings: list[str] = []
 
     jira_sem = asyncio.Semaphore(_JIRA_CONCURRENCY)
@@ -182,14 +203,21 @@ async def build_plan(jira: Jira, gl: GL, version_id: int) -> dict:
 
     # 3. Group by repo. An MR's branch commits may never reach a tag when it's squashed, so where an
     #    issue has an MR in a repo the MR alone says what ships. Commits count only for MR-less repos.
+    #    Only issues in the release make up the plan; the others are listed so people can see what's missing.
     repos: dict[str, dict[str, dict]] = {}
+    links_of: dict[str, list[dict]] = {i["key"]: [] for i in issues}
     for key, links in links_by_issue.items():
         repos_with_mr = {l["path"] for l in links if "iid" in l}
         for link in links:
             if "sha" in link and link["path"] in repos_with_mr:
                 continue
             change = _change_from_link(gl, link, mrs)
-            repos.setdefault(link["path"], {}).setdefault(change["ref"], change)["issues"].append(key)
+            links_of[key].append({
+                "ref": change["ref"], "url": change["url"], "state": change["state"],
+                "path": link["path"], "repo": link["path"].rsplit("/", 1)[-1],
+            })
+            if key in in_release:
+                repos.setdefault(link["path"], {}).setdefault(change["ref"], change)["issues"].append(key)
 
     # 4. Tags per repo
     live_repos = {p: list(c.values()) for p, c in repos.items() if any(x["state"] != "closed" for x in c.values())}
@@ -202,12 +230,6 @@ async def build_plan(jira: Jira, gl: GL, version_id: int) -> dict:
             plan_rows.append(row)
     plan_rows.sort(key=lambda r: (r["group"], r["name"]))
 
-    links_of = {i["key"]: [] for i in issues}
-    for path, changes in repos.items():
-        for c in changes.values():
-            for key in c["issues"]:
-                links_of[key].append({"ref": c["ref"], "url": c["url"], "state": c["state"], "path": path, "repo": path.rsplit("/", 1)[-1]})
-
     return {
         "issues": [
             {
@@ -216,14 +238,14 @@ async def build_plan(jira: Jira, gl: GL, version_id: int) -> dict:
                 "summary":  i["fields"].get("summary"),
                 "assignee": (i["fields"].get("assignee") or {}).get("displayName"),
                 "type":     (i["fields"].get("issuetype") or {}).get("name"),
+                **_status_of(i["fields"]),
+                "in_release": i["key"] in in_release,
                 "links":    links_of[i["key"]],
             }
             for i in issues
         ],
-        "total_issues":   len(all_issues),
-        "other_statuses": [{"name": name, "count": count} for name, count in other_statuses.most_common()],
-        "repos":          plan_rows,
-        "warnings":       warnings,
+        "repos":    plan_rows,
+        "warnings": warnings,
     }
 
 

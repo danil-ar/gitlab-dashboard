@@ -6,7 +6,7 @@ import CopyBlock from "../components/CopyBlock";
 import { Icon, IconSpin } from "../components/icons";
 
 const STATE_BADGES = {
-  new_tag:   { label: "new tag",    className: "bg-blue-50 text-blue-700",   title: "Some changes aren't in a tag yet. The deploy tag still has to be created." },
+  new_tag:   { label: "needs tag",  className: "bg-blue-50 text-blue-700",   title: "Some changes aren't in a tag yet. The deploy tag still has to be created." },
   tagged:    { label: "tag exists", className: "bg-green-50 text-green-700", title: "All changes are in the latest tag, so that tag is what gets deployed." },
   older_tag: { label: "older tag",  className: "bg-amber-50 text-amber-700", title: "All changes are in a tag, but newer tags exist. Check whether this repo belongs in the plan." },
   no_tags:   { label: "no tags",    className: "bg-gray-100 text-gray-600",  title: "GitLab has no vX.Y.Z tags here, so no tag is suggested." },
@@ -25,11 +25,43 @@ const CHANGE_STATE_COLORS = {
   unknown: "text-red-600",
 };
 
+const JIRA_STATUS_COLORS = {
+  new:           "bg-gray-100 text-gray-600",
+  indeterminate: "bg-blue-50 text-blue-700",
+  done:          "bg-green-50 text-green-700",
+};
+const IN_RELEASE_COLOR = "bg-green-50 text-green-700";
+// Work under way first: it's the most likely to still make the release. Closed ones (withdrawn) last.
+const OTHER_STATUS_ORDER = { indeterminate: 0, new: 1, done: 2 };
+
+const SECTION_TITLE = "text-xs font-semibold uppercase tracking-wider text-gray-500";
 const INPUT = "text-sm border border-gray-200 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500";
-const TAG_INPUT = "font-mono text-xs w-24 border border-gray-200 rounded px-1.5 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400";
+const TAG_INPUT = "font-mono text-xs w-20 border border-gray-200 rounded px-1.5 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400";
 
 function formatDate(iso) {
   return iso ? iso.split("-").reverse().join(".") : "no date";
+}
+
+function daysUntil(iso) {
+  const [year, month, day] = iso.split("-").map(Number);
+  const now = new Date();
+  return Math.round((new Date(year, month - 1, day) - new Date(now.getFullYear(), now.getMonth(), now.getDate())) / 86_400_000);
+}
+
+function releaseTiming(release) {
+  if (release.released) return { label: "Released", className: "bg-green-50 text-green-700" };
+  if (!release.release_date) return { label: "Not released", className: "bg-gray-100 text-gray-600" };
+  const days = daysUntil(release.release_date);
+  if (days < 0) return { label: `${-days}d overdue`, className: "bg-red-50 text-red-700" };
+  if (days === 0) return { label: "Today", className: "bg-amber-50 text-amber-700" };
+  if (days === 1) return { label: "Tomorrow", className: "bg-amber-50 text-amber-700" };
+  return { label: `In ${days} days`, className: "bg-gray-100 text-gray-600" };
+}
+
+// Most release names already carry the date, and there's no point saying it twice.
+function dateIfNotInName(release) {
+  const date = formatDate(release.release_date);
+  return release.name?.includes(date) ? null : date;
 }
 
 function planText(rows, tagField) {
@@ -98,41 +130,52 @@ function JiraConnect({ jiraUrl, reason, onConnect }) {
 
 // ─── plan ────────────────────────────────────────────────────────────────────
 
+function StatusBadge({ className, title, children }) {
+  return (
+    <span title={title} className={`text-[11px] font-medium px-1.5 py-0.5 rounded whitespace-nowrap ${className}`}>
+      {children}
+    </span>
+  );
+}
+
 function RepoRow({ row, onEdit, onBuild }) {
   const badge = STATE_BADGES[row.state];
   const disabled = row.state === "error";
   const canBuild = row.include && BUILDABLE_STATES.has(row.state) && VERSION_TAG.test(row.deploy_tag ?? "");
   return (
     <>
-      <tr className="border-t border-gray-100 align-top">
+      <tr className={`border-t border-gray-100 ${row.include ? "" : "opacity-60"}`}>
         <td className="pl-3 py-2.5 w-8">
           <input
             type="checkbox"
+            aria-label={`Include ${row.name} in the plans`}
             checked={row.include}
             disabled={disabled}
             onChange={(e) => onEdit(row.path, { include: e.target.checked })}
-            className="w-4 h-4 rounded accent-blue-600 cursor-pointer disabled:cursor-default"
+            className="block w-4 h-4 rounded accent-blue-600 cursor-pointer disabled:cursor-default"
           />
         </td>
         <td className="px-3 py-2.5 min-w-0">
           <a href={row.web_url} target="_blank" rel="noopener noreferrer"
-             className="text-sm font-medium text-gray-900 hover:text-blue-700 hover:underline">
+             className="text-sm font-medium text-gray-900 hover:text-blue-700 hover:underline whitespace-nowrap">
             {row.name}
           </a>
-          <div className="text-[11px] text-gray-400">
-            {row.group} · {row.issues.length} issue{row.issues.length !== 1 ? "s" : ""}
+          <div className="flex flex-wrap gap-x-2 text-[11px] text-gray-400 [&>span]:whitespace-nowrap">
+            <span>{row.group}</span>
+            <span>{row.issues.length} issue{row.issues.length !== 1 ? "s" : ""}</span>
             {!disabled && (
-              <>
-                {" · latest in GitLab: "}
+              <span>
+                {"latest "}
                 <a href={`${row.web_url}/-/tags`} target="_blank" rel="noopener noreferrer"
+                   title="The highest vX.Y.Z tag in GitLab"
                    className="font-mono text-gray-500 hover:text-blue-700 hover:underline">
-                  {row.latest_tag ?? "no tags"}
+                  {row.latest_tag ?? "none"}
                 </a>
-              </>
+              </span>
             )}
           </div>
         </td>
-        <td className="px-2 py-2.5">
+        <td className="px-2 py-2.5 whitespace-nowrap">
           <input
             aria-label={`Rollback tag for ${row.name}`}
             value={row.rollback_tag ?? ""}
@@ -140,8 +183,7 @@ function RepoRow({ row, onEdit, onBuild }) {
             onChange={(e) => onEdit(row.path, { rollback_tag: e.target.value })}
             className={TAG_INPUT}
           />
-        </td>
-        <td className="px-2 py-2.5">
+          <span className="mx-1.5 text-gray-300" aria-hidden="true">→</span>
           <input
             aria-label={`Deploy tag for ${row.name}`}
             value={row.deploy_tag ?? ""}
@@ -151,23 +193,23 @@ function RepoRow({ row, onEdit, onBuild }) {
           />
         </td>
         <td className="px-3 py-2.5">
-          <span title={badge.title} className={`text-[11px] font-medium px-1.5 py-0.5 rounded whitespace-nowrap ${badge.className}`}>
-            {badge.label}
-          </span>
-          {canBuild && (
-            <button
-              onClick={() => onBuild(row)}
-              className="block mt-1.5 text-xs px-2 py-1 rounded border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 whitespace-nowrap"
-            >
-              Build tag
-            </button>
-          )}
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+            <StatusBadge className={badge.className} title={badge.title}>{badge.label}</StatusBadge>
+            {canBuild && (
+              <button
+                onClick={() => onBuild(row)}
+                className="text-xs px-2 py-1 rounded border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 whitespace-nowrap"
+              >
+                Build tag
+              </button>
+            )}
+          </div>
         </td>
       </tr>
       {(row.error || row.warnings.length > 0) && (
-        <tr>
+        <tr className={row.include ? "" : "opacity-60"}>
           <td />
-          <td colSpan={4} className="px-3 pb-2.5 text-[11px] text-amber-700 space-y-0.5">
+          <td colSpan={3} className="px-3 pb-2.5 text-[11px] text-amber-700 space-y-0.5">
             {row.error && <div className="text-red-600">{row.error}</div>}
             {row.warnings.map((w) => <div key={w}>{w}</div>)}
           </td>
@@ -178,6 +220,9 @@ function RepoRow({ row, onEdit, onBuild }) {
 }
 
 function IssueRow({ issue }) {
+  const statusColor = issue.in_release
+    ? IN_RELEASE_COLOR
+    : issue.status_category === "indeterminate" ? JIRA_STATUS_COLORS.indeterminate : JIRA_STATUS_COLORS.new;
   return (
     <div className="flex items-baseline gap-3 px-3 py-2 border-t border-gray-100 first:border-t-0">
       <a href={issue.url} target="_blank" rel="noopener noreferrer"
@@ -185,10 +230,12 @@ function IssueRow({ issue }) {
         {issue.key}
       </a>
       <div className="flex-1 min-w-0">
-        <div className="text-[13px] text-gray-800 truncate">{issue.summary}</div>
+        <div className="text-[13px] text-gray-800 truncate" title={issue.summary}>{issue.summary}</div>
         <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
           {issue.assignee && <span className="text-gray-400">{issue.assignee}</span>}
-          {issue.links.length === 0 && <span className="text-amber-700">no GitLab links</span>}
+          {issue.links.length === 0 && (
+            <span className={issue.in_release ? "text-amber-700" : "text-gray-400"}>no GitLab links</span>
+          )}
           {issue.links.map((link) => (
             <a key={link.url} href={link.url} target="_blank" rel="noopener noreferrer"
                title={link.state}
@@ -198,8 +245,30 @@ function IssueRow({ issue }) {
           ))}
         </div>
       </div>
+      <StatusBadge className={`shrink-0 ${statusColor}`}>{issue.status}</StatusBadge>
     </div>
   );
+}
+
+function IssueGroup({ title, note, issues }) {
+  if (issues.length === 0) return null;
+  return (
+    <div>
+      <div className="mb-1.5 flex flex-wrap items-baseline gap-x-2 text-xs">
+        <h4 className="font-medium text-gray-700">{title} · {issues.length}</h4>
+        {note && <span className="text-gray-400">{note}</span>}
+      </div>
+      <div className="border border-gray-200 rounded-lg bg-white">
+        {issues.map((issue) => <IssueRow key={issue.key} issue={issue} />)}
+      </div>
+    </div>
+  );
+}
+
+function statusCounts(issues) {
+  const counts = new Map();
+  for (const issue of issues) counts.set(issue.status, (counts.get(issue.status) ?? 0) + 1);
+  return [...counts].map(([name, count]) => `${name} ${count}`).join(" · ");
 }
 
 function ReleaseDetail({ release, status, filterPaths, jiraUrl, onTokenRejected }) {
@@ -249,6 +318,20 @@ function ReleaseDetail({ release, status, filterPaths, jiraUrl, onTokenRejected 
     .filter((issue) => issue.links.length === 0 || issue.links.some((link) => inFilter(link.path)))
     .map((issue) => ({ ...issue, links: issue.links.filter((link) => inFilter(link.path)) }));
   const hiddenIssueCount = allIssues.length - issues.length;
+  const inRelease = issues.filter((issue) => issue.in_release);
+  const otherIssues = issues
+    .filter((issue) => !issue.in_release)
+    .sort((a, b) => (OTHER_STATUS_ORDER[a.status_category] ?? 1) - (OTHER_STATUS_ORDER[b.status_category] ?? 1)
+      || (a.status ?? "").localeCompare(b.status ?? ""));
+  const stillOpen = otherIssues.filter((issue) => issue.status_category !== "done").length;
+
+  const planned = rows.filter((row) => row.include);
+  const needTag = planned.filter((row) => row.state === "new_tag").length;
+  const toCheck = rows.reduce((n, row) => n + row.warnings.length + (row.error ? 1 : 0), 0)
+    + inRelease.filter((issue) => issue.links.length === 0).length;
+  const timing = releaseTiming(release);
+  const date = dateIfNotInName(release);
+  const issueStatus = release.release_issue_status;
 
   const rebuild = () => setAttempt((n) => n + 1);
 
@@ -274,12 +357,24 @@ function ReleaseDetail({ release, status, filterPaths, jiraUrl, onTokenRejected 
           <h2 className="text-base font-semibold text-gray-900">
             <a href={release.url} target="_blank" rel="noopener noreferrer" className="hover:text-blue-700 hover:underline">{release.name}</a>
           </h2>
-          <p className="mt-0.5 text-xs text-gray-500">
-            {formatDate(release.release_date)} · {release.released ? "released" : "not released"}
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+            <StatusBadge className={timing.className}>{timing.label}</StatusBadge>
+            {date && <span>{date}</span>}
             {release.release_issue && (
-              <> · <a href={release.release_issue_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{release.release_issue}</a></>
+              <a href={release.release_issue_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{release.release_issue}</a>
             )}
-          </p>
+            {issueStatus?.status && (
+              <StatusBadge className={JIRA_STATUS_COLORS[issueStatus.status_category] ?? JIRA_STATUS_COLORS.new}>{issueStatus.status}</StatusBadge>
+            )}
+          </div>
+          {plan && (
+            <p className="mt-2 text-xs text-gray-600">
+              {rows.length} repositor{rows.length !== 1 ? "ies" : "y"}
+              {needTag > 0 && <> · <span className="font-medium text-blue-700">{needTag} need{needTag === 1 ? "s" : ""} a tag</span></>}
+              {inRelease.length + stillOpen > 0 && <> · {inRelease.length} of {inRelease.length + stillOpen} issues ready</>}
+              {toCheck > 0 && <> · <span className="font-medium text-amber-700">{toCheck} to check</span></>}
+            </p>
+          )}
         </div>
         <button
           onClick={rebuild}
@@ -306,7 +401,7 @@ function ReleaseDetail({ release, status, filterPaths, jiraUrl, onTokenRejected 
           )}
 
           <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-2">Repositories</h3>
+            <h3 className={`${SECTION_TITLE} mb-2`}>Repositories</h3>
             {rows.length === 0 ? (
               <p className="text-sm text-gray-400 border border-gray-200 rounded-lg bg-white py-8 text-center">
                 {hiddenRepos.length > 0
@@ -320,9 +415,8 @@ function ReleaseDetail({ release, status, filterPaths, jiraUrl, onTokenRejected 
                     <tr className="text-[11px] text-gray-400">
                       <th />
                       <th className="px-3 py-2 font-medium">Repository</th>
-                      <th className="px-2 py-2 font-medium">Rollback to</th>
-                      <th className="px-2 py-2 font-medium">Deploy</th>
-                      <th className="px-3 py-2 font-medium">State</th>
+                      <th className="px-2 py-2 font-medium">Rollback → Deploy</th>
+                      <th className="px-3 py-2 font-medium">Status</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -345,24 +439,17 @@ function ReleaseDetail({ release, status, filterPaths, jiraUrl, onTokenRejected 
             </section>
           )}
 
-          <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-2">
-              Issues in "{status}" · {issues.length} of {plan.total_issues}
-            </h3>
-            {plan.other_statuses.length > 0 && (
-              <p className="mb-2 text-xs text-gray-500">
-                Not counted: {plan.other_statuses.map((s) => `${s.name} ${s.count}`).join(" · ")}
-              </p>
-            )}
+          <section className="space-y-3">
+            <h3 className={SECTION_TITLE}>Issues</h3>
             {hiddenIssueCount > 0 && (
-              <p className="mb-2 text-xs text-gray-500">
+              <p className="text-xs text-gray-500">
                 {hiddenIssueCount} more touch only repositories outside your project filter.
               </p>
             )}
-            {issues.length > 0 && (
-              <div className="border border-gray-200 rounded-lg bg-white">
-                {issues.map((issue) => <IssueRow key={issue.key} issue={issue} />)}
-              </div>
+            <IssueGroup title={`In "${status}"`} issues={inRelease} />
+            <IssueGroup title="Other statuses" note={statusCounts(otherIssues)} issues={otherIssues} />
+            {issues.length === 0 && (
+              <p className="text-sm text-gray-400 border border-gray-200 rounded-lg bg-white py-8 text-center">No issues to show</p>
             )}
           </section>
         </>
@@ -436,20 +523,29 @@ export default function Releases({ jiraUrl, connected, onConnected, projects, se
           </div>
         </div>
         <div className="flex-1 overflow-y-auto">
-          {shown.map((r) => (
-            <button
-              key={r.id}
-              onClick={() => setSelectedId(r.id)}
-              className={`w-full text-left px-3 py-2 border-b border-gray-100 transition-colors ${
-                r.id === selectedId ? "bg-blue-50" : "hover:bg-gray-50"
-              }`}
-            >
-              <div className="text-sm text-gray-900 truncate">{r.name}</div>
-              <div className="text-[11px] text-gray-400 font-mono">
-                {formatDate(r.release_date)}{r.release_issue ? ` · ${r.release_issue}` : ""}
-              </div>
-            </button>
-          ))}
+          {shown.map((r) => {
+            const timing = releaseTiming(r);
+            const date = dateIfNotInName(r);
+            return (
+              <button
+                key={r.id}
+                onClick={() => setSelectedId(r.id)}
+                className={`w-full text-left px-3 py-2 border-b border-gray-100 transition-colors ${
+                  r.id === selectedId ? "bg-blue-50" : "hover:bg-gray-50"
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="flex-1 min-w-0 text-sm text-gray-900 truncate" title={r.name}>{r.name}</span>
+                  {!r.released && <StatusBadge className={`shrink-0 ${timing.className}`}>{timing.label}</StatusBadge>}
+                </div>
+                <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-gray-400 min-w-0">
+                  {date && <span className="font-mono shrink-0">{date}</span>}
+                  {r.release_issue && <span className="font-mono shrink-0">{r.release_issue}</span>}
+                  {r.release_issue_status?.status && <span className="truncate">· {r.release_issue_status.status}</span>}
+                </div>
+              </button>
+            );
+          })}
           {list && shown.length === 0 && (
             <p className="text-center py-8 text-xs text-gray-400">No releases here</p>
           )}
