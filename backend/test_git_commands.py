@@ -61,7 +61,7 @@ def project(tmp_path):
 
 
 def test_they_merge_develop_and_tag_the_result(project):
-    run = paste(project.mine, manual_commands("develop", "master", project.head, "v1.4.0", True))
+    run = paste(project.mine, manual_commands("develop", "master", project.head, project.rev("master"), "v1.4.0", True))
     assert run.returncode == 0, run.stderr
     assert project.rev("v1.4.0^{commit}") == project.rev("master")
     assert len(git(project.origin, "log", "-1", "--format=%P", "master").split()) == 2, "a merge commit, as an MR makes"
@@ -71,7 +71,7 @@ def test_they_merge_develop_and_tag_the_result(project):
 
 
 def test_commits_pushed_after_the_preview_stay_out(project):
-    commands = manual_commands("develop", "master", project.head, "v1.4.0", True)
+    commands = manual_commands("develop", "master", project.head, project.rev("master"), "v1.4.0", True)
     later = add_commit(project.colleague, "after-preview")
     git(project.colleague, "push", "-q", "origin", "develop")
     assert paste(project.mine, commands).returncode == 0
@@ -81,7 +81,7 @@ def test_commits_pushed_after_the_preview_stay_out(project):
 
 def test_nothing_ahead_only_tags_master(project):
     before = project.rev("master")
-    run = paste(project.mine, manual_commands("develop", "master", project.head, "v2.0.0", False))
+    run = paste(project.mine, manual_commands("develop", "master", project.head, before, "v2.0.0", False))
     assert run.returncode == 0, run.stderr
     assert project.rev("master") == before
     assert project.rev("v2.0.0^{commit}") == before
@@ -89,7 +89,7 @@ def test_nothing_ahead_only_tags_master(project):
 
 def test_it_works_with_main(tmp_path):
     project = Project(tmp_path, target="main")
-    run = paste(project.mine, manual_commands("develop", "main", project.head, "v3.1.0", True))
+    run = paste(project.mine, manual_commands("develop", "main", project.head, project.rev("main"), "v3.1.0", True))
     assert run.returncode == 0, run.stderr
     assert project.rev("v3.1.0^{commit}") == project.rev("main")
 
@@ -101,7 +101,7 @@ def test_a_diverged_local_master_stops_before_pushing_anything(project):
     add_commit(project.colleague, "remote-only")
     git(project.colleague, "push", "-q", "origin", "master")
     before = project.rev("master")
-    assert paste(project.mine, manual_commands("develop", "master", project.head, "v4.0.0", True)).returncode != 0
+    assert paste(project.mine, manual_commands("develop", "master", project.head, before, "v4.0.0", True)).returncode != 0
     assert project.rev("master") == before
     assert "v4.0.0" not in git(project.origin, "tag").split()
 
@@ -110,5 +110,16 @@ def test_an_existing_tag_is_refused_and_not_moved(project):
     git(project.colleague, "tag", "v5.0.0", "master")
     git(project.colleague, "push", "-q", "origin", "v5.0.0")
     before = project.rev("v5.0.0")
-    assert paste(project.mine, manual_commands("develop", "master", project.head, "v5.0.0", False)).returncode != 0
+    assert paste(project.mine, manual_commands("develop", "master", project.head, project.rev("master"), "v5.0.0", False)).returncode != 0
     assert project.rev("v5.0.0") == before
+
+
+def test_nothing_ahead_tags_the_previewed_commit_if_master_moved_on(project):
+    previewed = project.rev("master")
+    commands = manual_commands("develop", "master", project.head, previewed, "v6.0.0", False)
+    git(project.colleague, "checkout", "-q", "master")
+    add_commit(project.colleague, "landed-after-the-preview")
+    git(project.colleague, "push", "-q", "origin", "master")
+    run = paste(project.mine, commands)
+    assert run.returncode == 0, run.stderr
+    assert project.rev("v6.0.0^{commit}") == previewed

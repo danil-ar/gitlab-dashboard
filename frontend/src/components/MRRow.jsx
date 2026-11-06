@@ -229,7 +229,7 @@ export default function MRRow({ mr, bucket, selected, onToggle }) {
       </div>
 
       <div className="w-[48px] hidden md:flex shrink-0">
-        <ThreadsStatus stats={mr.discussion_stats} projectId={mr.project_id} iid={mr.iid} mrUrl={mr.web_url} />
+        <ThreadsStatus stats={mr.discussion_stats} projectId={mr.project_id} iid={mr.iid} updatedAt={mr.updated_at} mrUrl={mr.web_url} />
       </div>
 
       <div className="w-[96px] hidden md:flex items-center gap-1.5 shrink-0">

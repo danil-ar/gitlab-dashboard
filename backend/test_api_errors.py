@@ -175,6 +175,63 @@ def test_batches_cope_with_nothing_to_do(client):
 
 # ─── accounts ─────────────────────────────────────────────────────────────────
 
+@pytest.fixture
+def two_accounts(use_handler):
+    """Accounts A and B in one session, with B active as if another tab had just switched to it."""
+    approved_with = []
+
+    def handler(req):
+        token = req.headers["private-token"]
+        if req.url.path.endswith("/user"):
+            return httpx.Response(200, json={"id": 1, "name": token, "username": token})
+        if req.url.path.endswith("/approve"):
+            approved_with.append(token)
+            return httpx.Response(201, json={})
+        return failure(404)
+
+    use_handler(handler)
+    c = TestClient(main.app, raise_server_exceptions=False)
+    for token in ("A", "B"):
+        assert c.post("/api/auth/login", json={"gitlab_url": "https://g.test", "token": token}).status_code == 200
+    ids = {p["label"]: p["id"] for p in c.get("/api/auth/profiles").json()["profiles"]}
+    return c, ids, approved_with
+
+
+def test_a_stale_tab_acts_as_the_account_on_its_screen(two_accounts):
+    c, ids, approved_with = two_accounts
+    assert c.post("/api/merge-requests/1/1/approve", headers={"X-Profile-Id": ids["A"]}).status_code == 200
+    assert approved_with == ["A"]
+    assert c.get("/api/me", headers={"X-Profile-Id": ids["A"]}).json()["name"] == "A"
+
+
+def test_without_a_named_account_the_active_one_acts(two_accounts):
+    c, _, approved_with = two_accounts
+    assert c.post("/api/merge-requests/1/1/approve").status_code == 200
+    assert approved_with == ["B"]
+
+
+def test_an_account_removed_in_another_tab_isnt_replaced_by_the_active_one(two_accounts):
+    c, ids, approved_with = two_accounts
+    c.delete(f"/api/auth/profiles/{ids['A']}")
+    response = c.post("/api/merge-requests/1/1/approve", headers={"X-Profile-Id": ids["A"]})
+    assert response.status_code == 409
+    assert "another tab" in response.json()["detail"]
+    assert approved_with == []
+
+
+def test_an_account_from_nowhere_acts_as_nobody(two_accounts):
+    c, _, approved_with = two_accounts
+    assert c.post("/api/merge-requests/1/1/approve", headers={"X-Profile-Id": "not-in-this-session"}).status_code == 409
+    assert approved_with == []
+
+
+def test_signed_out_everywhere_is_still_a_401(two_accounts):
+    c, ids, _ = two_accounts
+    c.post("/api/auth/logout")
+    c.cookies.clear()
+    assert c.get("/api/me", headers={"X-Profile-Id": ids["A"]}).status_code == 401
+
+
 def test_a_mistyped_token_in_the_form_isnt_a_dead_session(client, use_handler, gitlab):
     def rejects_new_token(req):
         return failure(401, "401 Unauthorized") if req.url.path.endswith("/user") else gitlab(req)

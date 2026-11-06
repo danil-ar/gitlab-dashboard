@@ -71,12 +71,15 @@ async def mr_discussion_stats_batch(refs: list[MRRef], gl: GL = Depends(get_gl))
     threads = await asyncio.gather(
         *[service.fetch_discussions(gl, ref.project_id, ref.iid) for ref in refs]
     )
-    return _by_ref(refs, [disc.compute_stats(t) for t in threads])
+    return _by_ref(refs, [disc.compute_stats(t) if t is not None else None for t in threads])
 
 
 @router.get("/projects/{project_id}/merge_requests/{iid}/discussion-stats")
 async def mr_discussion_stats(project_id: int, iid: int, gl: GL = Depends(get_gl)):
-    return disc.compute_stats(await service.fetch_discussions(gl, project_id, iid))
+    threads = await service.fetch_discussions(gl, project_id, iid)
+    if threads is None:
+        raise HTTPException(status_code=502, detail="GitLab didn't return this merge request's threads")
+    return disc.compute_stats(threads)
 
 
 async def _approval_action(gl: GL, project_id: int, iid: int, action: str) -> dict:

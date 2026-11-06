@@ -29,7 +29,7 @@ export default function BuildTagDialog({ row, versionId, jiraUrl, onClose }) {
   const [checked, setChecked]     = useState(false);
   const [running, setRunning]     = useState(false);
   const [result, setResult]       = useState(null);
-  const [changed, setChanged]     = useState(false);
+  const [changed, setChanged]     = useState(null);
 
   const tag = row.deploy_tag;
 
@@ -50,15 +50,22 @@ export default function BuildTagDialog({ row, versionId, jiraUrl, onClose }) {
   const build = async () => {
     setRunning(true);
     setError(null);
-    setChanged(false);
+    setChanged(null);
     try {
-      const res = await api.post("/api/releases/build-tag", { path: row.path, tag, source_sha: preview.source_sha });
+      const res = await api.post("/api/releases/build-tag", {
+        path: row.path,
+        tag,
+        source_sha: preview.source_sha,
+        target_sha: preview.target_sha,
+        // After a merge whose tag failed, the tag still belongs on that merge, not on what the branch holds now.
+        merged_sha: result?.merged_sha ?? null,
+      });
       if (res.status === "changed") {
-        setChanged(true);
+        setChanged(res.branch);
         setResult(null);
         await loadPreview();
       } else {
-        setResult(res);
+        setResult((previous) => ({ ...res, mr_url: res.mr_url ?? previous?.mr_url }));
       }
     } catch (e) {
       setError(e.message);
@@ -89,7 +96,7 @@ export default function BuildTagDialog({ row, versionId, jiraUrl, onClose }) {
             </div>
           )}
           {error && <Banner onRetry={preview ? undefined : loadPreview}>{error}</Banner>}
-          {changed && <Banner tone="warning">{preview?.source ?? "The branch"} changed after the preview, so nothing was merged. Check the new list below.</Banner>}
+          {changed && <Banner tone="warning"><code>{changed}</code> changed after the preview, so nothing was done. Check the new list below.</Banner>}
 
           {preview?.tag_exists && !done && (
             <Banner tone="warning">Tag {tag} already exists in GitLab. Nothing to build.</Banner>

@@ -4,7 +4,7 @@ from fastapi import Depends, HTTPException
 
 from . import gitlab
 from .config import JIRA_PROJECT, JIRA_URL
-from .session import active_profile, read_session
+from .session import request_profile
 
 
 class Jira:
@@ -33,12 +33,9 @@ class Jira:
             raise HTTPException(status_code=502, detail="Jira returned a non-JSON response. Check JIRA_URL.")
 
 
-def get_jira(session: dict = Depends(read_session)) -> Jira:
+def get_jira(profile: dict = Depends(request_profile)) -> Jira:
     if not JIRA_URL or not JIRA_PROJECT:
         raise HTTPException(status_code=404, detail="Jira integration is not configured")
-    active = active_profile(session)
-    if not active:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    if not active.get("jiraToken"):
+    if not profile.get("jiraToken"):
         raise HTTPException(status_code=403, detail="Connect Jira first")
-    return Jira(active["jiraToken"])
+    return Jira(profile["jiraToken"])

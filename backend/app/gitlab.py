@@ -6,6 +6,7 @@ mapping, call counting and cache namespacing apply in exactly one place.
 import asyncio
 import hashlib
 from contextvars import ContextVar
+from http.cookiejar import DefaultCookiePolicy
 from urllib.parse import urlsplit
 
 import httpx
@@ -60,6 +61,9 @@ async def startup() -> None:
         verify=CA_BUNDLE or True,
         limits=httpx.Limits(max_connections=CONCURRENCY * 2, max_keepalive_connections=CONCURRENCY),
     )
+    # One client serves every account, and its cookie jar would carry a session that GitLab or Jira
+    # set for one of them into the next one's requests. Tokens authenticate, so no cookies at all.
+    _http.cookies.jar.set_policy(DefaultCookiePolicy(allowed_domains=[]))
     _slots = asyncio.Semaphore(CONCURRENCY)
 
 

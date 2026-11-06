@@ -136,16 +136,19 @@ def merge_block_reason(status: str | None) -> str:
     return _MERGE_BLOCKS.get(status, f"GitLab won't merge it yet ({status})")
 
 
-def manual_commands(source: str, target: str, source_sha: str, tag: str, ahead: bool) -> list[str]:
+def manual_commands(source: str, target: str, source_sha: str, target_sha: str, tag: str, ahead: bool) -> list[str]:
     """Git commands with the same result as the Build tag button, for doing it by hand.
 
-    Merging the previewed commit rather than the branch name means what was reviewed is what ships,
-    even if the branch moves in between. No comment lines: pasted into zsh, a # line is an error.
+    Naming the previewed commits rather than the branches means what was reviewed is what ships,
+    even if a branch moves in between. No comment lines: pasted into zsh, a # line is an error.
     """
     commands = ["git fetch origin --tags", f"git checkout {target}", f"git pull --ff-only origin {target}"]
     if ahead:
         commands += [
             f'git merge --no-ff {source_sha} -m "Release {tag}: {source} into {target}"',
             f"git push origin {target}",
+            f"git tag {tag}",
         ]
-    return commands + [f"git tag {tag}", f"git push origin {tag}"]
+    else:
+        commands.append(f"git tag {tag} {target_sha}")
+    return commands + [f"git push origin {tag}"]

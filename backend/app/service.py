@@ -9,8 +9,8 @@ from fastapi import HTTPException
 from . import cache, discussions as disc, graphql
 from .cache import MISS
 from .config import (
-    GRAPHQL_MR_LIMIT, GRAPHQL_PROJECT_BATCH, MAX_MR_PAGES, MAX_NOTE_PAGES,
-    MAX_PROJECT_PAGES, USE_GRAPHQL, log,
+    GRAPHQL_MR_LIMIT, GRAPHQL_PROJECT_BATCH, MAX_DISCUSSION_PAGES, MAX_MR_PAGES, MAX_NOTE_PAGES,
+    MAX_PROJECT_PAGES, MAX_TODO_PAGES, USE_GRAPHQL, log,
 )
 from .gitlab import GL, gather_settled, why
 
@@ -25,17 +25,23 @@ async def current_user(gl: GL) -> dict:
     return user
 
 
-async def fetch_discussions(gl: GL, project_id: int, iid: int) -> list[dict]:
+async def fetch_discussions(gl: GL, project_id: int, iid: int) -> list[dict] | None:
+    """Every thread of an MR, or None when GitLab couldn't say: a failed call must not pass for "no threads"."""
     key = gl.key("discussions", project_id, iid)
     cached = cache.discussions.get(key)
     if cached is not MISS:
         return cached
-    r = await gl.try_get(f"/projects/{project_id}/merge_requests/{iid}/discussions", {"per_page": 100})
-    if r is None:
-        return []
-    result = r.json()
-    if not isinstance(result, list):
-        return []
+    try:
+        result = await gl.get_all(
+            f"/projects/{project_id}/merge_requests/{iid}/discussions", {"per_page": 100},
+            MAX_DISCUSSION_PAGES, strict=True,
+        )
+    except HTTPException as e:
+        if e.status_code == 401:  # the token is dead, which is not an "unknown"
+            raise
+        return None
+    except ValueError:  # not JSON, e.g. a proxy's error page sent with 200
+        return None
     cache.discussions.set(key, result)
     return result
 
@@ -169,17 +175,16 @@ async def activities_after_approval(gl: GL, project_id: int, iid: int, user_id: 
                     # Everything past the subject line, where people explain why.
                     "body":     message.split("\n", 1)[1].strip() if "\n" in message else "",
                 })
-    new_threads, new_replies, previews = disc.compute_new_threads(threads, approval_dt)
-    if not new_commits and not new_threads and not new_replies:
-        cache.activities.set(key, None)
-        return None
+    new_threads, new_replies, previews = disc.compute_new_threads(threads or [], approval_dt)
     result = {
         "commits":             new_commits,
         "new_threads":         new_threads,
         "new_replies":         new_replies,
         "new_thread_previews": previews,
-    }
-    cache.activities.set(key, result)
+    } if new_commits or new_threads or new_replies else None
+    # This cache only ends when the MR changes, so a read that failed must not be remembered as "no activity".
+    if commits_r is not None and threads is not None:
+        cache.activities.set(key, result)
     return result
 
 
@@ -330,7 +335,7 @@ async def enrich(gl: GL, mr_list: list[dict], with_details: bool = False,
         )
         for mr, pipeline, mr_threads in zip(mr_list, pipelines, threads):
             mr["pipeline"] = pipeline
-            mr["discussion_stats"] = disc.compute_stats(mr_threads)
+            mr["discussion_stats"] = disc.compute_stats(mr_threads) if mr_threads is not None else None
 
     log.debug("enriched %s MRs in %.2fs (details=%s)", len(mr_list), time.monotonic() - t0, with_details)
     return mr_list
@@ -527,7 +532,7 @@ MENTION_ACTIONS = ("mentioned", "directly_addressed")
 
 async def mentioned_merge_requests(gl: GL) -> list[dict]:
     """Merge requests where somebody tagged you and you have not looked yet."""
-    todos = (await gl.get("/todos", {"state": "pending", "per_page": 100})).json()
+    todos = await gl.get_all("/todos", {"state": "pending", "per_page": 100}, MAX_TODO_PAGES, strict=True)
     seen: set = set()
     out: list[dict] = []
     for todo in todos:

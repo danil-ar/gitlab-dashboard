@@ -7,7 +7,7 @@ from .. import release_plan, releases
 from ..config import JIRA_URL
 from ..gitlab import GL
 from ..jira import Jira, get_jira
-from ..session import active_profile, get_gl, read_session, write_cookie
+from ..session import get_gl, read_session, request_profile, write_cookie
 
 router = APIRouter(tags=["releases"])
 
@@ -20,6 +20,8 @@ class BuildTagBody(BaseModel):
     path: str
     tag: str
     source_sha: str
+    target_sha: str
+    merged_sha: str | None = None
 
 
 def _require_version_tag(tag: str) -> None:
@@ -28,15 +30,17 @@ def _require_version_tag(tag: str) -> None:
 
 
 @router.post("/jira/connect")
-async def jira_connect(body: JiraConnectBody, response: Response, session: dict = Depends(read_session)):
+async def jira_connect(
+    body: JiraConnectBody,
+    response: Response,
+    session: dict = Depends(read_session),
+    profile: dict = Depends(request_profile),
+):
     if not JIRA_URL:
         raise HTTPException(status_code=404, detail="Jira integration is not configured")
-    active = active_profile(session)
-    if not active:
-        raise HTTPException(status_code=401, detail="Not authenticated")
     token = body.token.strip()
     await Jira(token).get("/myself")
-    profiles = [{**p, "jiraToken": token} if p["id"] == active["id"] else p for p in session["profiles"]]
+    profiles = [{**p, "jiraToken": token} if p["id"] == profile["id"] else p for p in session["profiles"]]
     write_cookie(response, {**session, "profiles": profiles})
     return {"ok": True}
 
@@ -71,4 +75,4 @@ async def release_repo_preview(
 @router.post("/releases/build-tag")
 async def build_release_tag(body: BuildTagBody, gl: GL = Depends(get_gl)):
     _require_version_tag(body.tag)
-    return await releases.build_tag(gl, body.path, body.tag, body.source_sha)
+    return await releases.build_tag(gl, body.path, body.tag, body.source_sha, body.target_sha, body.merged_sha)

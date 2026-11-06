@@ -1,6 +1,7 @@
 """GitLab to-do list."""
 from fastapi import APIRouter, Depends, Query
 
+from ..config import MAX_TODO_PAGES
 from ..gitlab import GL
 from ..session import get_gl
 
@@ -27,7 +28,7 @@ async def todos_list(
         params["action"] = action
     if target_type:
         params["type"] = target_type
-    return (await gl.get("/todos", params)).json()
+    return await gl.get_all("/todos", params, MAX_TODO_PAGES, strict=True)
 
 
 @router.post("/mark_all_done")

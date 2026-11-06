@@ -34,6 +34,7 @@ class FakeRepo:
         self.merge_statuses = []  # consumed one per read; "mergeable" once empty
         self.merge_error = None
         self.tag_error = None
+        self.merge_hides_commit = False
         self.create_mr_error = None
         self.token_dead = False
         self.writes = []
@@ -88,6 +89,9 @@ class FakeRepo:
                 return refusal(self.merge_error, "merge refused")
             self.mrs[0]["state"] = "merged"
             self.ahead = []
+            self.branches["main" if "main" in self.branches else "master"] = "m1"
+            if self.merge_hides_commit:
+                return httpx.Response(200, json={"state": "merged"})
             return httpx.Response(200, json={"merge_commit_sha": "m1", "sha": "d1", "state": "merged"})
         if req.method == "POST" and tail == "/repository/tags":
             if self.tag_error:
@@ -113,8 +117,8 @@ def client(repo):
     return c
 
 
-def build(client, tag="v1.1.0", sha="d1"):
-    return client.post("/api/releases/build-tag", json={"path": PATH, "tag": tag, "source_sha": sha})
+def build(client, tag="v1.1.0", sha="d1", target="m0", merged=None):
+    return client.post("/api/releases/build-tag", json={"path": PATH, "tag": tag, "source_sha": sha, "target_sha": target, "merged_sha": merged})
 
 
 def preview(client, tag="v1.1.0"):
@@ -161,7 +165,21 @@ def test_repeating_it_writes_nothing_more(client, repo):
 # ─── when it must not write ───────────────────────────────────────────────────
 
 def test_develop_moved_after_the_preview_writes_nothing(client, repo):
-    assert build(client, sha="OLD").json()["status"] == "changed"
+    result = build(client, sha="OLD").json()
+    assert (result["status"], result["branch"]) == ("changed", "develop")
+    assert repo.writes == []
+
+
+def test_master_moved_after_the_preview_writes_nothing(client, repo):
+    """A merge from there would carry somebody else's commits into the tag, unseen."""
+    result = build(client, target="OLD").json()
+    assert (result["status"], result["branch"]) == ("changed", "master")
+    assert repo.writes == []
+
+
+def test_with_nothing_ahead_master_moving_still_writes_nothing(client, repo):
+    repo.ahead = []
+    assert build(client, target="OLD").json()["status"] == "changed"
     assert repo.writes == []
 
 
@@ -242,25 +260,56 @@ def test_it_gives_up_waiting_without_merging(client, repo):
 def test_a_refused_tag_says_the_merge_already_happened(client, repo):
     repo.tag_error = 403
     result = build(client).json()
-    assert (result["status"], result["merged"]) == ("blocked", True)
+    assert (result["status"], result["merged"], result["merged_sha"]) == ("blocked", True, "m1")
     assert "protected tag" in result["reason"]
 
 
-def test_retrying_after_a_refused_tag_doesnt_merge_again(client, repo):
+def test_a_retry_tags_that_merge_even_if_master_has_moved_on(client, repo):
+    """It used to tag "master", and so whatever had landed there in between."""
+    repo.tag_error = 403
+    merged = build(client).json()["merged_sha"]
+    repo.tag_error = None
+    repo.branches["master"] = "somebody-elses-commit"
+    written = len(repo.writes)
+    assert build(client, merged=merged).json()["status"] == "done"
+    assert [method for method, _, _ in repo.writes[written:]] == ["POST"], "no second merge"
+    assert repo.writes[-1][2]["ref"] == "m1"
+
+
+def test_a_retry_tags_that_merge_even_if_develop_has_moved_on(client, repo):
+    repo.tag_error = 403
+    merged = build(client).json()["merged_sha"]
+    repo.tag_error = None
+    repo.branches["develop"] = "d2"
+    repo.ahead = [commit("LKAG-1: later")]
+    assert build(client, merged=merged).json()["status"] == "done"
+    assert repo.writes[-1][2]["ref"] == "m1"
+    assert [kind for kind in repo.write_kinds() if kind == ("PUT", "merge")] == [("PUT", "merge")]
+
+
+def test_reopening_after_a_refused_tag_asks_again_when_master_moved(client, repo):
+    """A new preview has no merge to remember, so it goes by what that preview showed."""
     repo.tag_error = 403
     build(client)
     repo.tag_error = None
-    written = len(repo.writes)
-    assert build(client).json()["status"] == "done"
-    assert [method for method, _, _ in repo.writes[written:]] == ["POST"]
-    assert repo.writes[-1][2]["ref"] == "master"
+    assert build(client, target="m0").json()["status"] == "changed"
+    assert preview(client).json()["target_sha"] == "m1"
+    assert build(client, target="m1").json()["status"] == "done"
+    assert repo.writes[-1][2]["ref"] == "m1"
 
 
-def test_nothing_ahead_only_creates_the_tag(client, repo):
+def test_a_merge_that_doesnt_name_its_commit_leaves_no_tag(client, repo):
+    repo.merge_hides_commit = True
+    result = build(client).json()
+    assert (result["status"], result["merged"], result["merged_sha"]) == ("blocked", True, None)
+    assert ("POST", "tags") not in repo.write_kinds()
+
+
+def test_nothing_ahead_tags_the_commit_the_preview_showed(client, repo):
     repo.ahead = []
     assert build(client).json()["status"] == "done"
     assert repo.write_kinds() == [("POST", "tags")]
-    assert repo.writes[0][2]["ref"] == "master"
+    assert repo.writes[0][2]["ref"] == "m0"
 
 
 def test_it_falls_back_to_main_when_there_is_no_master(client, repo):
@@ -274,7 +323,7 @@ def test_it_falls_back_to_main_when_there_is_no_master(client, repo):
 def test_the_preview_writes_nothing_and_says_what_would_happen(client, repo):
     body = preview(client).json()
     assert repo.writes == []
-    assert (body["source"], body["target"], body["source_sha"], body["ahead"]) == ("develop", "master", "d1", 1)
+    assert (body["source"], body["target"], body["source_sha"], body["target_sha"], body["ahead"]) == ("develop", "master", "d1", "m0", 1)
     assert (body["tag_exists"], body["open_mr"]) == (False, None)
 
 
@@ -300,7 +349,10 @@ def test_the_commands_use_the_real_target_head_and_tag(client):
 
 def test_nothing_ahead_means_no_merge_in_the_commands(client, repo):
     repo.ahead = []
-    assert preview(client).json()["commands"] == [c for c in ALL_COMMANDS if "merge" not in c and c != "git push origin master"]
+    assert preview(client).json()["commands"] == [
+        "git fetch origin --tags", "git checkout master", "git pull --ff-only origin master",
+        "git tag v1.1.0 m0", "git push origin v1.1.0",
+    ]
 
 
 def test_the_commands_follow_the_target_branch(client, repo):

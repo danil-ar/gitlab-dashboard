@@ -270,8 +270,8 @@ async def _release_target_branch(gl: GL, enc: str) -> str:
     raise HTTPException(status_code=404, detail=f"The repo has no {' or '.join(_RELEASE_TARGET_BRANCHES)} branch")
 
 
-async def _source_head(gl: GL, enc: str) -> str:
-    r = await gl.get(f"/projects/{enc}/repository/branches/{_RELEASE_SOURCE_BRANCH}")
+async def _branch_head(gl: GL, enc: str, branch: str) -> str:
+    r = await gl.get(f"/projects/{enc}/repository/branches/{quote(branch, safe='')}")
     return r.json()["commit"]["id"]
 
 
@@ -297,7 +297,8 @@ async def repo_preview(jira: Jira, gl: GL, version_id: int, path: str, tag: str)
     """What building this tag would do, and everything that would reach the target branch with it."""
     enc = quote(path, safe="")
     target = await _release_target_branch(gl, enc)
-    head = await _source_head(gl, enc)
+    head = await _branch_head(gl, enc, _RELEASE_SOURCE_BRANCH)
+    target_head = await _branch_head(gl, enc, target)
     commits = await _commits_ahead(gl, enc, target)
     mr = await _open_release_mr(gl, enc, target)
     statuses = {i["key"]: i["fields"]["status"]["name"] for i in await _version_issues(jira, version_id)}
@@ -305,10 +306,11 @@ async def repo_preview(jira: Jira, gl: GL, version_id: int, path: str, tag: str)
         "source": _RELEASE_SOURCE_BRANCH,
         "target": target,
         "source_sha": head,
+        "target_sha": target_head,
         "ahead": len(commits),
         "open_mr": {"iid": mr["iid"], "url": mr["web_url"]} if mr else None,
         "tag_exists": await _exists(gl, _tag_path(enc, tag)),
-        "commands": release_plan.manual_commands(_RELEASE_SOURCE_BRANCH, target, head, tag, bool(commits)),
+        "commands": release_plan.manual_commands(_RELEASE_SOURCE_BRANCH, target, head, target_head, tag, bool(commits)),
         **release_plan.summarize_commits(commits, statuses, _PLANNED_STATUSES, JIRA_PROJECT),
     }
 
@@ -358,8 +360,14 @@ async def _merge_release_mr(gl: GL, enc: str, target: str, tag: str, sha: str) -
 
 
 
-async def build_tag(gl: GL, path: str, tag: str, source_sha: str) -> dict:
-    """Merge develop into master and tag the result. Safe to repeat: each step is skipped once it's done."""
+async def build_tag(gl: GL, path: str, tag: str, source_sha: str, target_sha: str, merged_sha: str | None = None) -> dict:
+    """Merge develop into master and tag the result. Safe to repeat: each step is skipped once it's done.
+
+    The tag goes on a commit, never on a branch name: the one the merge produced, or the target head the
+    preview showed. If either branch moved since the preview nothing is written, because what would ship
+    is no longer what was reviewed. `merged_sha` is the merge from an earlier attempt whose tag failed.
+    That merge was reviewed, whatever has landed on the branch since.
+    """
     enc = quote(path, safe="")
     repo_url = f"{gl.url}/{path}"
     done = {
@@ -371,20 +379,32 @@ async def build_tag(gl: GL, path: str, tag: str, source_sha: str) -> dict:
     if await _exists(gl, _tag_path(enc, tag)):
         return done
 
-    target = await _release_target_branch(gl, enc)
-    ref = target
     mr_url = None
-    if await _commits_ahead(gl, enc, target):
-        if await _source_head(gl, enc) != source_sha:
-            return {"status": "changed"}
-        merge = await _merge_release_mr(gl, enc, target, tag, source_sha)
-        mr_url = merge["mr_url"]
-        if "blocked" in merge:
-            return {"status": "blocked", "reason": merge["blocked"], "mr_url": mr_url, "merged": False}
-        ref = merge["merged_sha"] or target
+    if merged_sha:
+        ref = merged_sha
+    else:
+        target = await _release_target_branch(gl, enc)
+        if await _branch_head(gl, enc, target) != target_sha:
+            return {"status": "changed", "branch": target}
+        ref = target_sha
+        if await _commits_ahead(gl, enc, target):
+            if await _branch_head(gl, enc, _RELEASE_SOURCE_BRANCH) != source_sha:
+                return {"status": "changed", "branch": _RELEASE_SOURCE_BRANCH}
+            merge = await _merge_release_mr(gl, enc, target, tag, source_sha)
+            mr_url = merge["mr_url"]
+            if "blocked" in merge:
+                return {"status": "blocked", "reason": merge["blocked"], "mr_url": mr_url, "merged": False, "merged_sha": None}
+            merged_sha = merge["merged_sha"]
+            if not merged_sha:
+                reason = "GitLab merged it but didn't say which commit, so the tag wasn't created. Check the branch and build again."
+                return {"status": "blocked", "reason": reason, "mr_url": mr_url, "merged": True, "merged_sha": None}
+            ref = merged_sha
 
     try:
         await gl.post(f"/projects/{enc}/repository/tags", {"tag_name": tag, "ref": ref})
     except HTTPException as e:
-        return {"status": "blocked", "reason": f"Could not create the tag: {_write_refused(e)}", "mr_url": mr_url, "merged": ref != target}
+        return {
+            "status": "blocked", "reason": f"Could not create the tag: {_write_refused(e)}", "mr_url": mr_url,
+            "merged": merged_sha is not None, "merged_sha": merged_sha,
+        }
     return {**done, "mr_url": mr_url}

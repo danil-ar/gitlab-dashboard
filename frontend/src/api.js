@@ -35,10 +35,11 @@ async function request(method, path, { body, signal } = {}) {
     response = await fetch(path, {
       method,
       signal,
-      ...(body !== undefined && {
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      }),
+      headers: {
+        ...(sentWith && { "X-Profile-Id": sentWith.profile.id }),
+        ...(body !== undefined && { "Content-Type": "application/json" }),
+      },
+      ...(body !== undefined && { body: JSON.stringify(body) }),
     });
   } catch (e) {
     if (e.name === "AbortError") throw e;

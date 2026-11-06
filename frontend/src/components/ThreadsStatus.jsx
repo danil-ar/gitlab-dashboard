@@ -136,27 +136,33 @@ function ThreadList({ stats, mrUrl }) {
   );
 }
 
-export default function ThreadsStatus({ stats: propStats, projectId, iid, mrUrl }) {
+export default function ThreadsStatus({ stats: propStats, projectId, iid, updatedAt, mrUrl }) {
   const fetchedRef  = useRef(false);
   const abortRef    = useRef(null);
   const [fetchedStats, setFetchedStats] = useState(null);
   const [loading, setLoading]           = useState(false);
   const [loadError, setLoadError]       = useState(null);
+  const [open, setOpen]                 = useState(false);
 
   // The list carries the counters; the thread text arrives only for a row
-  // somebody opens, so the fetched object is the richer of the two.
+  // somebody opens, so the fetched object is the richer of the two. The counters
+  // shown still come from the list while it has them: it is the fresher one.
   const stats      = fetchedStats ?? propStats;
+  const counters   = propStats ?? fetchedStats;
   const hasThreads = !!stats && "unresolved_previews" in stats;
+  const total      = propStats?.total;
+  const resolved   = propStats?.resolved;
 
+  // Text fetched earlier stops being true once the list says the MR has changed.
   useEffect(() => {
     fetchedRef.current = false;
     setFetchedStats(null);
     setLoading(false);
     setLoadError(null);
     return () => abortRef.current?.abort();
-  }, [projectId, iid]);
+  }, [projectId, iid, updatedAt, total, resolved]);
 
-  const handleOpen = (open) => {
+  useEffect(() => {
     if (!open || hasThreads || fetchedRef.current) return;
     fetchedRef.current = true;
     setLoading(true);
@@ -166,28 +172,33 @@ export default function ThreadsStatus({ stats: propStats, projectId, iid, mrUrl 
       .then((s) => { setFetchedStats(s); setLoading(false); })
       .catch((e) => {
         if (e.name === "AbortError") return;
-        fetchedRef.current = false; // opening it again retries
         setLoadError(e.message);
         setLoading(false);
       });
+  }, [open, hasThreads, projectId, iid, updatedAt, total, resolved]);
+
+  // Opening it again after a failure tries again.
+  const handleOpenChange = (next) => {
+    if (next && loadError) fetchedRef.current = false;
+    setOpen(next);
   };
 
   if (propStats === undefined && fetchedStats === null) {
     return <div className="w-8 h-3 bg-gray-200 rounded animate-pulse" />;
   }
 
-  if (!stats || stats.total === 0) {
+  if (!counters || counters.total === 0) {
     return <span className="text-[11px] text-gray-400">—</span>;
   }
 
   return (
-    <Popover onOpenChange={handleOpen}>
+    <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>
         <button className={`flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer rounded px-1.5 py-0.5 -mx-1.5 transition-colors hover:bg-gray-100 hover:ring-1 hover:ring-gray-200 data-[state=open]:bg-gray-100 data-[state=open]:ring-1 data-[state=open]:ring-gray-200 ${
-          stats.resolved === stats.total ? "text-green-600" : "text-orange-500"
+          counters.resolved === counters.total ? "text-green-600" : "text-orange-500"
         }`}>
           {loading ? <IconSpin className="w-3 h-3 shrink-0" /> : <Icon name="chat" className="w-3 h-3 shrink-0" />}
-          <span className="tabular-nums animate-in fade-in duration-300">{stats.resolved}/{stats.total}</span>
+          <span className="tabular-nums animate-in fade-in duration-300">{counters.resolved}/{counters.total}</span>
         </button>
       </PopoverTrigger>
       <PopoverContent

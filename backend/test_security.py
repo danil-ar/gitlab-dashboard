@@ -8,7 +8,7 @@ import pytest_asyncio
 from fastapi.testclient import TestClient
 
 import main
-from app import gitlab
+from app import gitlab, jira
 from app.gitlab import GL
 from app.routes import auth
 
@@ -94,6 +94,45 @@ async def test_where_the_token_may_go(home, target, keeps):
     request = httpx.Request("GET", target, headers={"PRIVATE-TOKEN": "t"}, extensions={"token_home": gitlab.origin_of(home)})
     await gitlab._keep_token_home(request)
     assert ("PRIVATE-TOKEN" in request.headers) is keeps
+
+
+# ─── cookies between accounts ─────────────────────────────────────────────────
+
+def remembers_cookies(cookie):
+    """A server handing out a session cookie and noting the ones it gets back."""
+    received = []
+
+    def respond(request):
+        received.append(request.headers.get("Cookie"))
+        return 200, {"Content-Type": "application/json", "Set-Cookie": f"{cookie}; Path=/"}, b"{}"
+
+    return received, respond
+
+
+@pytest.mark.asyncio
+async def test_a_gitlab_session_set_for_one_account_doesnt_reach_the_next(client_lifecycle):
+    received, respond = remembers_cookies("_gitlab_session=session-of-A")
+    server, url = serve(respond)
+    try:
+        await GL(url, "token-A").get("/user")
+        await GL(url, "token-B").get("/user")
+    finally:
+        server.shutdown()
+    assert received == [None, None]
+
+
+@pytest.mark.asyncio
+async def test_a_jira_session_set_for_one_account_doesnt_reach_the_next(client_lifecycle, monkeypatch):
+    """Jira answers with JSESSIONID, and a session can outrank the token sent beside it."""
+    received, respond = remembers_cookies("JSESSIONID=session-of-A")
+    server, url = serve(respond)
+    monkeypatch.setattr(jira, "JIRA_URL", url)
+    try:
+        await jira.Jira("jira-A").get("/myself")
+        await jira.Jira("jira-B").get("/myself")
+    finally:
+        server.shutdown()
+    assert received == [None, None]
 
 
 # ─── the avatar proxy ─────────────────────────────────────────────────────────

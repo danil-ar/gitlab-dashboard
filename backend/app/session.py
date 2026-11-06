@@ -8,7 +8,7 @@ import hashlib
 import json
 
 from cryptography.fernet import Fernet
-from fastapi import Cookie, Depends, HTTPException
+from fastapi import Cookie, Depends, Header, HTTPException
 from fastapi.responses import Response
 
 from .config import COOKIE_MAX_AGE, COOKIE_NAME, SECRET_KEY, SECURE_COOKIE, log
@@ -76,8 +76,26 @@ def active_profile(session: dict) -> dict | None:
     return next((p for p in session.get("profiles", []) if p["id"] == active_id), None)
 
 
-def get_gl(session: dict = Depends(read_session)) -> GL:
+def request_profile(session: dict = Depends(read_session), x_profile_id: str | None = Header(None)) -> dict:
+    """The account this request acts for: the one on the screen that sent it.
+
+    The cookie's active account is shared by every tab, so going by it alone, approving in one tab
+    after switching accounts in another would approve as somebody the screen doesn't show. On another
+    GitLab the same project and MR numbers would even be a different merge request.
+    """
+    profiles = session.get("profiles", [])
+    if not profiles:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if x_profile_id:
+        profile = next((p for p in profiles if p["id"] == x_profile_id), None)
+        if not profile:
+            raise HTTPException(status_code=409, detail="This account was removed in another tab. Reload the page.")
+        return profile
     active = active_profile(session)
     if not active:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    return GL(active["gitlabUrl"], active["token"])
+    return active
+
+
+def get_gl(profile: dict = Depends(request_profile)) -> GL:
+    return GL(profile["gitlabUrl"], profile["token"])

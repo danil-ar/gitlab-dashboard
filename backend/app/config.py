@@ -90,3 +90,5 @@ CONCURRENCY       = env_int("GITLAB_CONCURRENCY", 10)
 MAX_PROJECT_PAGES = env_int("MAX_PROJECT_PAGES", 10)  # /projects, 100 per page
 MAX_MR_PAGES      = env_int("MAX_MR_PAGES", 5)        # per merge-request query
 MAX_NOTE_PAGES    = env_int("MAX_NOTE_PAGES", 20)     # approval-note scan
+MAX_DISCUSSION_PAGES = env_int("MAX_DISCUSSION_PAGES", 20)  # threads of one MR, system notes included
+MAX_TODO_PAGES    = env_int("MAX_TODO_PAGES", 5)      # the to-do list
