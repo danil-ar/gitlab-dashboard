@@ -302,23 +302,29 @@ function statusCounts(issues) {
   return [...counts].map(([name, count]) => `${name} ${count}`).join(" · ");
 }
 
-function IssueKeys({ keys, releaseKeys, jiraUrl }) {
+// Green is ready, amber is in this version but not there yet, grey is another version's or none.
+function IssueKeys({ keys, versionIssues, jiraUrl }) {
   return keys.map((key) => {
-    const inRelease = releaseKeys.has(key);
+    const issue = versionIssues.get(key);
+    const color = !issue ? "text-gray-500" : issue.in_release ? "text-green-700 font-medium" : "text-amber-700 font-medium";
+    const title = !issue ? "Not in this release" : issue.in_release ? "In this release" : `In this release, but not ready: ${issue.status}`;
     return (
-      <a key={key} href={`${jiraUrl}/browse/${key}`} target="_blank" rel="noopener noreferrer"
-         title={inRelease ? "In this release" : "Not in this release"}
-         className={`font-mono hover:underline ${inRelease ? "text-green-700 font-medium" : "text-gray-500"}`}>
-        {key}
-      </a>
+      <span key={key} title={title} className={color}>
+        <a href={`${jiraUrl}/browse/${key}`} target="_blank" rel="noopener noreferrer" className="font-mono hover:underline">{key}</a>
+        {issue && !issue.in_release && <span className="font-normal"> ({issue.status})</span>}
+      </span>
     );
   });
 }
 
 // Nothing in Jira ties these to the release, so they stay out of the plan until somebody adds them.
-function OtherRepos({ others, repos, releaseKeys, jiraUrl, onAdd, onRetry }) {
-  const inRelease = (repo) => repo.issues.filter((key) => releaseKeys.has(key)).length;
-  const sorted = [...repos].sort((a, b) => inRelease(b) - inRelease(a) || b.commits.length - a.commits.length);
+function OtherRepos({ others, repos, versionIssues, jiraUrl, onAdd, onRetry }) {
+  const count = (repo, wanted) => repo.issues.filter((key) => wanted(versionIssues.get(key))).length;
+  const sorted = [...repos].sort((a, b) => count(b, (i) => i?.in_release) - count(a, (i) => i?.in_release)
+    || count(b, Boolean) - count(a, Boolean)
+    || b.commits.length - a.commits.length);
+  const uncheckedWhy = new Map();
+  for (const { name, reason } of others.unchecked) uncheckedWhy.set(reason, [...(uncheckedWhy.get(reason) ?? []), name]);
   const quiet = !others.loading && !others.error && repos.length === 0;
   return (
     <section>
@@ -345,7 +351,7 @@ function OtherRepos({ others, repos, releaseKeys, jiraUrl, onAdd, onRetry }) {
                 />
                 <a href={repo.web_url} target="_blank" rel="noopener noreferrer" className="text-sm font-medium text-gray-900 hover:text-blue-700 hover:underline">{repo.name}</a>
                 <span className="font-mono text-gray-600">{repo.rollback_tag} → {repo.deploy_tag}</span>
-                <IssueKeys keys={repo.issues} releaseKeys={releaseKeys} jiraUrl={jiraUrl} />
+                <IssueKeys keys={repo.issues} versionIssues={versionIssues} jiraUrl={jiraUrl} />
                 <a href={repo.compare_url} target="_blank" rel="noopener noreferrer" className="ml-auto text-blue-600 hover:underline">Compare</a>
               </div>
               <CommitList commits={repo.commits} label={`since ${repo.latest_tag}`} noKey={repo.no_key} open={false} />
@@ -353,11 +359,9 @@ function OtherRepos({ others, repos, releaseKeys, jiraUrl, onAdd, onRetry }) {
           ))}
         </div>
       )}
-      {others.unchecked.length > 0 && (
-        <p className="mt-2 text-xs text-gray-500">
-          Not checked: {others.unchecked.map(({ name, reason }) => `${name} (${reason})`).join(", ")}
-        </p>
-      )}
+      {[...uncheckedWhy].map(([reason, names]) => (
+        <p key={reason} className="mt-2 text-xs text-gray-500">Not checked, {reason}: {names.join(", ")}</p>
+      ))}
     </section>
   );
 }
@@ -446,7 +450,7 @@ function ReleaseDetail({ release, filterPaths, filterProjects, jiraUrl, onTokenR
     .map((issue) => ({ ...issue, links: issue.links.filter((link) => inFilter(link.path)) }));
   const hiddenIssueCount = allIssues.length - issues.length;
   const inRelease = issues.filter((issue) => issue.in_release);
-  const releaseKeys = new Set(allIssues.filter((issue) => issue.in_release).map((issue) => issue.key));
+  const versionIssues = new Map(allIssues.map((issue) => [issue.key, issue]));
   const otherIssues = issues
     .filter((issue) => !issue.in_release)
     .sort((a, b) => (OTHER_STATUS_ORDER[a.status_category] ?? 1) - (OTHER_STATUS_ORDER[b.status_category] ?? 1)
@@ -573,7 +577,7 @@ function ReleaseDetail({ release, filterPaths, filterProjects, jiraUrl, onTokenR
           </section>
 
           {others && (
-            <OtherRepos others={others} repos={offered} releaseKeys={releaseKeys} jiraUrl={jiraUrl} onAdd={onAdd} onRetry={reload} />
+            <OtherRepos others={others} repos={offered} versionIssues={versionIssues} jiraUrl={jiraUrl} onAdd={onAdd} onRetry={reload} />
           )}
           {!release.released && !filterProjects && (
             <p className="text-xs text-gray-500">Pick projects under Projects to also see which others have changes since their last tag.</p>
