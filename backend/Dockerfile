@@ -12,6 +12,6 @@ RUN pip install --no-cache-dir \
     ${pip_trusted_host:+--trusted-host=${pip_trusted_host}} \
     -r requirements.txt
 
-COPY main.py .
+COPY *.py ./
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

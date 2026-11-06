@@ -1,5 +1,7 @@
 import MRRow from "../components/MRRow";
 import RefreshButton from "../components/RefreshButton";
+import Banner from "../components/Banner";
+import { Icon } from "../components/icons";
 import { STATE_OPTS, SCOPE_OPTS } from "../constants";
 
 function Sel({ value, onChange, options, className = "" }) {
@@ -12,17 +14,16 @@ function Sel({ value, onChange, options, className = "" }) {
       >
         {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
-      <svg viewBox="0 0 16 16" className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 pointer-events-none" fill="none" stroke="currentColor" strokeWidth="1.5">
-        <path d="M4 6l4 4 4-4" strokeLinecap="round" strokeLinejoin="round"/>
-      </svg>
+      <Icon name="chevronDown" className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
     </div>
   );
 }
 
-export default function Browse({ data, loading, error, filters, setFilter, projectOpts, needsMyApproval, setNeedsMyApproval, refresh, page, setPage, currentUser, autoRefreshSecs, onAutoRefreshChange, searchQuery }) {
+export default function Browse({ data, loading, error, filters, setFilter, projectOpts, needsMyApproval, setNeedsMyApproval, refresh, page, setPage, currentUser, autoRefreshSecs, onAutoRefreshChange }) {
   const visibleItems = needsMyApproval && currentUser
     ? (data?.items ?? []).filter((mr) => !mr.approved_by_users?.some((u) => u.id === currentUser.id))
     : (data?.items ?? []);
+  const warnings = data?.warnings ?? [];
 
   return (
     <main className="flex-1 overflow-auto">
@@ -46,18 +47,19 @@ export default function Browse({ data, loading, error, filters, setFilter, proje
           </div>
         </div>
 
-        {error && (
-          <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-md text-sm text-red-700 flex items-center gap-3">
-            <span className="flex-1">{error}</span>
-            <button onClick={refresh} className="shrink-0 text-red-600 hover:text-red-800 font-medium underline underline-offset-2">Retry</button>
-          </div>
+        {error && <Banner onRetry={refresh} className="mb-4">{error}</Banner>}
+
+        {warnings.length > 0 && (
+          <Banner tone="warning" onRetry={refresh} className="mb-4">
+            {warnings.map((w) => <div key={w}>{w}</div>)}
+          </Banner>
         )}
 
         {(visibleItems.length > 0 || (data !== null && !loading)) && (
           <div className="rounded-lg overflow-hidden border border-gray-200 bg-white">
             {visibleItems.map((mr, i, arr) => (
               <div key={mr.id} className={i === arr.length - 1 ? "[&>div]:border-b-0" : ""}>
-                <MRRow mr={mr} currentUserId={currentUser?.id} />
+                <MRRow mr={mr} />
               </div>
             ))}
             {visibleItems.length === 0 && (

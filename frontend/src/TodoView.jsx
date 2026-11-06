@@ -1,10 +1,15 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import Avatar from "./components/Avatar";
+import Banner from "./components/Banner";
 import RefreshButton from "./components/RefreshButton";
+import { Icon } from "./components/icons";
+import { api } from "./api";
+import { timeAgo } from "./utils/timeAgo";
+import { renderMd } from "./utils/renderMd";
 
 /* ─────────────────────────── action metadata ─────────────────────────── */
 
-export const ACTIONS = {
+const ACTIONS = {
   assigned:           { label: "assigned you",             iconBg: "bg-blue-50",    iconText: "text-blue-600",   svg: "mr"   },
   review_requested:   { label: "requested your review",    iconBg: "bg-orange-50",  iconText: "text-orange-600", svg: "thumb"},
   mentioned:          { label: "mentioned you",            iconBg: "bg-purple-100", iconText: "text-purple-500", svg: "at"   },
@@ -17,42 +22,7 @@ export const ACTIONS = {
 
 const FALLBACK_ACTION = { label: "todo", iconBg: "bg-gray-100", iconText: "text-gray-600", svg: "inbox" };
 
-/* ─────────────────────────── icon paths ─────────────────────────── */
-
-const SVG = {
-  mr:    "M4.5 3v10M11.5 7v6M4.5 3a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Zm0 10a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3Zm7 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3ZM11.5 7c-3 0-4-1.5-4-3",
-  thumb: "M5 7v6.5a.5.5 0 0 0 .5.5h6.4a1 1 0 0 0 1-.8l.9-4.7a.5.5 0 0 0-.5-.6H10V5a1.5 1.5 0 0 0-3 0L5 7Zm0 0H2.5v6.5H5",
-  at:    "M8 13.5A5.5 5.5 0 1 1 13.5 8M8 11a3 3 0 1 1 0-6 3 3 0 0 1 0 6Zm3-3v.5a1.5 1.5 0 0 0 3 0V8",
-  check: "M3 8.5 6.5 12 13 4.5",
-  alert: "M8 2.5 14 13H2L8 2.5Z M8 6.5v3.5 M8 11.5v.01",
-  star:  "m8 2 1.7 3.6 3.8.5-2.8 2.7.7 3.9L8 10.8l-3.4 1.9.7-3.9L2.5 6.1l3.8-.5L8 2Z",
-  inbox: "M2.5 9.5V3.5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v6m-11 0v3a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-3m-11 0h3l1 2h3l1-2h3",
-  issue: "M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12Z M8 5v3.5 M8 11v.01",
-  epic:  "M2.5 3.5a1 1 0 0 1 1-1h3a2 2 0 0 1 1.5.7A2 2 0 0 1 9.5 2.5h3a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-3a2 2 0 0 0-1.5.7 2 2 0 0 0-1.5-.7h-3a1 1 0 0 1-1-1v-8Z M8 4v8.5",
-  clock: "M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12Zm0-9v3.5l2.5 1.5",
-  refresh: "M13.5 8A5.5 5.5 0 1 1 8 2.5c2 0 3.7 1 4.7 2.5M13.5 2.5V5H11",
-};
-
-function Glyph({ name, className = "w-3.5 h-3.5" }) {
-  const d = SVG[name];
-  if (!d) return null;
-  return (
-    <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth="1.5">
-      <path d={d} strokeLinecap="round" strokeLinejoin="round"/>
-    </svg>
-  );
-}
-
 /* ─────────────────────────── helpers ─────────────────────────── */
-
-function timeAgo(iso) {
-  if (!iso) return "";
-  const s = Math.floor((Date.now() - new Date(iso)) / 1000);
-  if (s < 60)    return `${s}s ago`;
-  if (s < 3600)  return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  return `${Math.floor(s / 86400)}d ago`;
-}
 
 function targetIconName(type) {
   if (type === "MergeRequest") return "mr";
@@ -76,17 +46,6 @@ function shortType(type) {
   if (type === "Issue") return "Issue";
   if (type === "Epic") return "Epic";
   return type ?? "—";
-}
-
-function renderBodyExcerpt(body) {
-  if (!body) return null;
-  return body.split(/(`[^`]+`|@\w[\w.-]*|#\d+)/).map((part, i) => {
-    if (part.startsWith("`") && part.endsWith("`"))
-      return <code key={i} className="font-mono bg-gray-200 px-1 rounded text-[11px]">{part.slice(1, -1)}</code>;
-    if (part.startsWith("@")) return <span key={i} className="text-blue-700 font-medium">{part}</span>;
-    if (part.startsWith("#")) return <span key={i} className="text-blue-700 font-mono">{part}</span>;
-    return part;
-  });
 }
 
 /* ─────────────────────────── atoms ─────────────────────────── */
@@ -124,13 +83,13 @@ function TodoRow({ todo, onMarkDone, busy }) {
   return (
     <div className="group flex items-start gap-3 px-4 py-3 bg-white border-b border-gray-100 hover:bg-gray-50">
       <span className={`w-7 h-7 rounded-full inline-flex items-center justify-center shrink-0 mt-0.5 ${action.iconBg} ${action.iconText}`}>
-        <Glyph name={action.svg} />
+        <Icon name={action.svg} />
       </span>
 
       <div className="flex-1 min-w-0">
         {/* project · iid + time/done */}
         <div className="flex items-center gap-1.5 min-w-0">
-          <Glyph name={targetIconName(todo.target_type)} className={`w-3 h-3 shrink-0 ${targetIconColor(todo.target_type)}`} />
+          <Icon name={targetIconName(todo.target_type)} className={`w-3 h-3 shrink-0 ${targetIconColor(todo.target_type)}`} />
           <span className="font-mono text-[11px] text-gray-500 truncate">
             {path}<span className="text-gray-400">{refSymbol(todo.target_type)}</span>{iid}
           </span>
@@ -141,7 +100,7 @@ function TodoRow({ todo, onMarkDone, busy }) {
             className="ml-auto hidden group-hover:flex items-center gap-1 text-[11px] text-gray-500 hover:text-green-700 disabled:opacity-40 shrink-0"
             title="Mark as done"
           >
-            <Glyph name="check" className="w-3 h-3 text-green-600" /> Done
+            <Icon name="check" className="w-3 h-3 text-green-600" /> Done
           </button>
         </div>
 
@@ -164,7 +123,7 @@ function TodoRow({ todo, onMarkDone, busy }) {
             </>
           ) : (
             <span className={`inline-flex items-center gap-1 font-medium ${action.iconText}`}>
-              <Glyph name={action.svg} className="w-3 h-3" /> GitLab
+              <Icon name={action.svg} className="w-3 h-3" /> GitLab
             </span>
           )}
           <span>{action.label}</span>
@@ -175,7 +134,7 @@ function TodoRow({ todo, onMarkDone, busy }) {
         {/* body excerpt */}
         {todo.body && (
           <div className="mt-2 pl-2.5 border-l-2 border-gray-200 bg-gray-50/50 rounded-r px-2 py-1 text-xs text-gray-600 leading-relaxed">
-            {renderBodyExcerpt(todo.body)}
+            {renderMd(todo.body)}
           </div>
         )}
       </div>
@@ -189,7 +148,7 @@ function TodoRow({ todo, onMarkDone, busy }) {
 function GroupHeader({ label, count, hint }) {
   return (
     <div className="flex items-center gap-2 pb-2">
-      <Glyph name="clock" className="w-3 h-3 text-gray-400" />
+      <Icon name="clock" className="w-3 h-3 text-gray-400" />
       <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">{label}</span>
       <span className="text-[11px] font-semibold tabular-nums px-1.5 py-0.5 rounded-full bg-gray-200 text-gray-700">{count}</span>
       {hint && <span className="ml-auto text-[11px] text-gray-400">{hint}</span>}
@@ -203,7 +162,6 @@ export default function TodoView() {
   const [todos, setTodos]      = useState([]);
   const [loading, setLoading]  = useState(false);
   const [error, setError]      = useState(null);
-  const state = "pending";
   const [actionFilter, setAct]      = useState("");
   const [busyId, setBusyId]         = useState(null);
   const [confirmAll, setConfirmAll]  = useState(false);
@@ -213,21 +171,13 @@ export default function TodoView() {
     setLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams({ state, per_page: 100 });
-      const r = await fetch(`/api/todos?${params}`);
-      if (r.status === 401) {
-        await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
-        window.location.reload();
-        return;
-      }
-      if (!r.ok) throw new Error(`Error ${r.status}: ${await r.text()}`);
-      setTodos(await r.json());
+      setTodos(await api.get("/api/todos?state=pending&per_page=100"));
     } catch (e) {
-      setError(e.message);
+      if (e.status !== 401) setError(e.message);
     } finally {
       setLoading(false);
     }
-  }, [state]);
+  }, []);
 
   useEffect(() => { load(); }, [load]);
 
@@ -240,8 +190,7 @@ export default function TodoView() {
   const markDone = async (id) => {
     setBusyId(id);
     try {
-      const r = await fetch(`/api/todos/${id}/done`, { method: "POST" });
-      if (!r.ok) throw new Error(await r.text());
+      await api.post(`/api/todos/${id}/done`);
       setTodos((prev) => prev.filter((t) => t.id !== id));
     } catch (e) {
       setError(e.message);
@@ -255,8 +204,7 @@ export default function TodoView() {
     setLoading(true);
     setAct("");
     try {
-      const r = await fetch("/api/todos/mark_all_done", { method: "POST" });
-      if (!r.ok) throw new Error(await r.text());
+      await api.post("/api/todos/mark_all_done");
       await load();
     } catch (e) {
       setError(e.message);
@@ -295,7 +243,7 @@ export default function TodoView() {
     <main className="flex-1 overflow-auto">
       <div className="max-w-5xl mx-auto px-6 py-6 space-y-4">
         <div className="flex items-center gap-3 flex-wrap">
-          <Glyph name="inbox" className="w-4 h-4 text-blue-600 shrink-0" />
+          <Icon name="inbox" className="w-4 h-4 text-blue-600 shrink-0" />
           <span className="text-sm font-semibold text-gray-900">To-Do</span>
           <span className="text-sm text-gray-400 tabular-nums">{displayTodos.length}</span>
           <div className="flex flex-wrap items-center gap-2 flex-1">
@@ -328,18 +276,18 @@ export default function TodoView() {
             ) : (
               <button onClick={() => setConfirmAll(true)}
                       className="text-sm px-3 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50 flex items-center gap-1.5">
-                <Glyph name="check" className="w-3 h-3 text-green-600" /> Mark all done
+                <Icon name="check" className="w-3 h-3 text-green-600" /> Mark all done
               </button>
             )}
             <RefreshButton onRefresh={load} loading={loading} interval={autoRefreshSecs} onIntervalChange={setAutoRefreshSecs} />
           </div>
         </div>
 
-        {error && <div className="p-3 bg-red-50 border border-red-200 rounded-md text-sm text-red-700">{error}</div>}
+        {error && <Banner onRetry={load}>{error}</Banner>}
 
         {displayTodos.length === 0 && !loading ? (
           <div className="text-center py-20">
-            <Glyph name="check" className="w-8 h-8 text-green-500 mx-auto mb-2" />
+            <Icon name="check" className="w-8 h-8 text-green-500 mx-auto mb-2" />
             <p className="text-sm text-gray-700 font-semibold">All caught up</p>
             <p className="text-xs text-gray-400 mt-1">Nothing waiting on you.</p>
           </div>
@@ -372,12 +320,6 @@ export default function TodoView() {
 /* ─────────────────────────── sidebar count helper ─────────────────────────── */
 
 export async function fetchTodoCount() {
-  try {
-    const r = await fetch("/api/todos?state=pending&per_page=100");
-    if (!r.ok) return 0;
-    const list = await r.json();
-    return Array.isArray(list) ? list.length : 0;
-  } catch {
-    return 0;
-  }
+  const list = await api.get("/api/todos?state=pending&per_page=100");
+  return list.length;
 }

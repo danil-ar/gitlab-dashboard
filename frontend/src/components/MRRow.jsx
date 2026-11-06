@@ -1,11 +1,12 @@
 import Avatar from "./Avatar";
 import PipelineStatus from "./PipelineStatus";
 import ThreadsStatus, { ThreadPreview } from "./ThreadsStatus";
+import { Icon } from "./icons";
 import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { timeAgo } from "../utils/timeAgo";
 
-export default function MRRow({ mr, currentUserId, bucket, selected, onToggle }) {
+export default function MRRow({ mr, bucket, selected, onToggle }) {
   const cleanTitle = mr.title.replace(/^(Draft|WIP):\s*/i, "");
   const isDraft    = mr.draft || /^(Draft|WIP):/i.test(mr.title);
   const proj       = mr.references?.full?.split("!")[0] ?? "";
@@ -22,9 +23,7 @@ export default function MRRow({ mr, currentUserId, bucket, selected, onToggle })
         <input type="checkbox" checked={!!selected} onChange={() => onToggle(mr.id)} className="w-4 h-4 rounded shrink-0 accent-blue-600 cursor-pointer" />
       )}
 
-      <svg viewBox="0 0 16 16" className={`w-4 h-4 shrink-0 ${isDraft ? "text-gray-400" : "text-green-600"}`} fill="none" stroke="currentColor" strokeWidth="1.5">
-        <path d="M4.5 3v10M11.5 7v6M4.5 3a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Zm0 10a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3Zm7 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3ZM11.5 7c-3 0-4-1.5-4-3" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
+      <Icon name="mr" className={`w-4 h-4 shrink-0 ${isDraft ? "text-gray-400" : "text-green-600"}`} />
 
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5 min-w-0">
@@ -113,7 +112,7 @@ export default function MRRow({ mr, currentUserId, bucket, selected, onToggle })
       </div>
 
       <div className="w-[48px] hidden md:flex shrink-0">
-        <ThreadsStatus stats={mr.discussion_stats} projectId={mr.project_id} iid={mr.iid} mrUrl={mr.web_url} />
+        <ThreadsStatus stats={mr.discussion_stats} mrUrl={mr.web_url} />
       </div>
 
       <div className="w-[96px] hidden md:flex items-center gap-1.5 shrink-0">
@@ -129,7 +128,7 @@ export default function MRRow({ mr, currentUserId, bucket, selected, onToggle })
             <span className="text-xs text-green-700 font-semibold tabular-nums">{mr.approved_by_users.length}</span>
           </>
         ) : (
-          <span className="text-[11px] text-gray-400">no approvals</span>
+          <span className="text-[11px] text-gray-400">{mr.approved_by_users === null ? "unknown" : "no approvals"}</span>
         )}
       </div>
 

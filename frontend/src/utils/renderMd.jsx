@@ -1,5 +1,6 @@
-// Inline markdown renderer: `code`, **bold**, _italic_, @mention
-const MD_PATTERN = /(`[^`]+`|\*\*[\s\S]+?\*\*|__[\s\S]+?__|_[^_]+_|\*[^*]+\*|@[\w.]+)/;
+// Inline markdown renderer: `code`, **bold**, _italic_, @mention, #123
+// The word-boundary checks keep snake_case_names and foo#1 from being read as markup.
+const MD_PATTERN = /(`[^`]+`|\*\*[\s\S]+?\*\*|__[\s\S]+?__|(?<!\w)_[^_]+_(?!\w)|\*[^*]+\*|@\w[\w.-]*|(?<!\w)#\d+)/;
 
 export function renderMd(text) {
   if (!text) return null;
@@ -11,8 +12,10 @@ export function renderMd(text) {
       return <strong key={i} className="font-semibold">{seg.slice(2, -2)}</strong>;
     if (/^(_|\*)[^_*]+(_|\*)$/.test(seg))
       return <em key={i} className="italic">{seg.slice(1, -1)}</em>;
-    if (/^@[\w.]+$/.test(seg))
+    if (/^@\w[\w.-]*$/.test(seg))
       return <span key={i} className="text-blue-500 font-medium">{seg}</span>;
+    if (/^#\d+$/.test(seg))
+      return <span key={i} className="text-blue-500 font-mono">{seg}</span>;
     return seg;
   });
 }

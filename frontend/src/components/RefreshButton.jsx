@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { IconRefresh } from "./icons";
+import { Icon } from "./icons";
 
 const INTERVALS = [
   { value: 0,    label: "Off"  },
@@ -29,7 +29,7 @@ export default function RefreshButton({ onRefresh, interval = 0, onIntervalChang
         onClick={onRefresh}
         className="flex items-center gap-1.5 text-sm px-3 py-1.5 border border-r-0 border-gray-200 rounded-l-md bg-white hover:bg-gray-50 text-gray-700 transition-colors"
       >
-        <IconRefresh className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
+        <Icon name="refresh" className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
         Refresh
         {interval > 0 && <span className="text-[11px] text-gray-400">· {activeLabel}</span>}
       </button>
@@ -37,9 +37,7 @@ export default function RefreshButton({ onRefresh, interval = 0, onIntervalChang
         onClick={() => setOpen((v) => !v)}
         className={`flex items-center px-2 border border-gray-200 rounded-r-md text-gray-500 hover:bg-gray-50 transition-colors ${open ? "bg-gray-100" : "bg-white"}`}
       >
-        <svg viewBox="0 0 16 16" className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2">
-          <path d="M4 6l4 4 4-4" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
+        <Icon name="chevronDown" className="w-3 h-3" strokeWidth={2} />
       </button>
 
       {open && (

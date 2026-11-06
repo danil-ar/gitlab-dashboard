@@ -5,8 +5,11 @@ import LoginScreen from "./components/LoginScreen";
 import ProjectSettings from "./components/ProjectSettings";
 import Triage from "./views/Triage";
 import Browse from "./views/Browse";
+import Releases from "./views/Releases";
 import Avatar from "./components/Avatar";
-import { IconSearch, IconFilter } from "./components/icons";
+import Banner from "./components/Banner";
+import { Icon } from "./components/icons";
+import { api, bindSession } from "./api";
 import { classifyMR } from "./utils/classifyMR";
 import { loadFilters, saveFilters, loadSelectedProjects, saveSelectedProjects } from "./utils/storage";
 
@@ -16,16 +19,25 @@ export default function Root() {
   const [ready, setReady]               = useState(false);
   const [profiles, setProfiles]         = useState([]);
   const [activeProfile, setActiveProfile] = useState(null);
+  const [jiraUrl, setJiraUrl]           = useState(null);
+  const [notice, setNotice]             = useState(null);
 
   const refresh = useCallback(async () => {
     try {
-      const r = await fetch("/api/auth/profiles");
-      const data = await r.json();
+      const data = await api.get("/api/auth/profiles");
       const list = data.profiles ?? [];
       const active = list.find((p) => p.id === data.activeId) ?? null;
+      // Only the account whose token died goes away; the user's other accounts stay signed in.
+      bindSession(active, async (expired) => {
+        setNotice(`The token for "${expired.label}" no longer works, so that account was removed. Add it again with a new token.`);
+        await api.delete(`/api/auth/profiles/${expired.id}`).catch(() => {});
+        await refresh();
+      });
       setProfiles(list);
       setActiveProfile(active);
+      setJiraUrl(data.jiraUrl ?? null);
     } catch {
+      bindSession(null);
       setProfiles([]);
       setActiveProfile(null);
     } finally {
@@ -43,23 +55,33 @@ export default function Root() {
     );
   }
 
-  if (!activeProfile) {
-    return <LoginScreen onLogin={refresh} />;
-  }
-
   return (
-    <App
-      key={activeProfile.id}
-      activeProfile={activeProfile}
-      profiles={profiles}
-      onRefresh={refresh}
-    />
+    <>
+      {notice && (
+        <div className="fixed top-3 left-1/2 -translate-x-1/2 z-50 w-full max-w-xl px-4">
+          <Banner tone="warning" onDismiss={() => setNotice(null)} className="shadow-lg">{notice}</Banner>
+        </div>
+      )}
+      {activeProfile ? (
+        <App
+          key={activeProfile.id}
+          activeProfile={activeProfile}
+          profiles={profiles}
+          jiraUrl={jiraUrl}
+          onRefresh={refresh}
+        />
+      ) : (
+        <LoginScreen onLogin={refresh} />
+      )}
+    </>
   );
 }
 
 // ─── main app ────────────────────────────────────────────────────────────────
 
-function App({ activeProfile, profiles, onRefresh }) {
+const BASICS_LABELS = { projects: "your projects", profile: "your GitLab profile", mentions: "your mentions" };
+
+function App({ activeProfile, profiles, jiraUrl, onRefresh }) {
   const [view, setView]                             = useState({ kind: "triage", bucket: "needs" });
   const [filters, setFilters]                       = useState(loadFilters);
   const [needsMyApproval, setNeedsMyApproval]       = useState(false);
@@ -76,7 +98,10 @@ function App({ activeProfile, profiles, onRefresh }) {
   const [selectedProjectIds, setSelectedProjectIds] = useState(loadSelectedProjects);
   const [autoRefreshSecs, setAutoRefreshSecs]       = useState(0);
   const [searchInput, setSearchInput]               = useState(filters.search);
+  const [basicsErrors, setBasicsErrors]             = useState({});
   const loadIdRef = useRef(0);
+
+  const isMRView = view.kind === "triage" || view.kind === "browse";
 
   // clear stale data and search when switching view kinds
   const prevViewKindRef = useRef(view.kind);
@@ -97,33 +122,45 @@ function App({ activeProfile, profiles, onRefresh }) {
     return () => clearTimeout(t);
   }, [searchInput, view.kind]);
 
-  const signOut = useCallback(async () => {
-    await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
-    onRefresh();
-  }, [onRefresh]);
+  // Resolves to the data, or to null after recording the failure for the banner.
+  const trackBasics = useCallback((key, request) => request
+    .then((value) => {
+      setBasicsErrors(({ [key]: _cleared, ...rest }) => rest);
+      return value;
+    })
+    .catch((e) => {
+      if (e.status !== 401) setBasicsErrors((prev) => ({ ...prev, [key]: e.message }));
+      return null;
+    }), []);
+
+  const refreshMentions = useCallback(() => {
+    trackBasics("mentions", api.get("/api/mentions")).then((d) => { if (d) setMentionedMRs(d); });
+  }, [trackBasics]);
+
+  const loadBasics = useCallback(() => {
+    trackBasics("projects", api.get("/api/projects")).then((d) => {
+      if (!d) return;
+      setProjects(d);
+      if (loadSelectedProjects().size === 0) {
+        api.get("/api/config").then((cfg) => {
+          if (!cfg.default_group) return;
+          const ns = cfg.default_group.toLowerCase();
+          const ids = new Set(d.filter((p) => p.path_with_namespace.toLowerCase().startsWith(ns + "/")).map((p) => p.id));
+          if (ids.size > 0) { saveSelectedProjects(ids); setSelectedProjectIds(ids); }
+        }).catch(() => {});
+      }
+    });
+    trackBasics("profile", api.get("/api/me")).then((d) => { if (d) setCurrentUser(d); });
+    refreshMentions();
+  }, [trackBasics, refreshMentions]);
 
   useEffect(() => {
-    fetch("/api/projects")
-      .then((r) => { if (r.status === 401) { signOut(); return null; } return r.json(); })
-      .then((d) => {
-        if (!d) return;
-        setProjects(d);
-        if (loadSelectedProjects().size === 0) {
-          fetch("/api/config").then((r) => r.json()).then((cfg) => {
-            if (!cfg.default_group) return;
-            const ns = cfg.default_group.toLowerCase();
-            const ids = new Set(d.filter((p) => p.path_with_namespace.toLowerCase().startsWith(ns + "/")).map((p) => p.id));
-            if (ids.size > 0) { saveSelectedProjects(ids); setSelectedProjectIds(ids); }
-          }).catch(() => {});
-        }
-      })
-      .catch(console.error);
-    fetch("/api/me").then((r) => { if (r.status === 401) { signOut(); return null; } return r.json(); }).then((d) => d && setCurrentUser(d)).catch(console.error);
-    fetch("/api/mentions").then((r) => { if (r.status === 401) return null; return r.json(); }).then((d) => d && setMentionedMRs(d)).catch(console.error);
-    fetchTodoCount().then(setTodoCount);
-    const id = setInterval(() => fetchTodoCount().then(setTodoCount), 60_000);
+    const updateTodoCount = () => fetchTodoCount().then(setTodoCount).catch(() => {});
+    loadBasics();
+    updateTodoCount();
+    const id = setInterval(updateTodoCount, 60_000);
     return () => clearInterval(id);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [loadBasics]);
 
   useEffect(() => { saveFilters(filters); }, [filters]);
 
@@ -143,77 +180,52 @@ function App({ activeProfile, profiles, onRefresh }) {
           ? { project_id: f.project_id }
           : ids.length > 0 ? { project_ids: ids.join(",") } : {}),
       });
-      const r = await fetch(`/api/merge-requests?${params}`);
-      if (r.status === 401) { signOut(); return; }
-      if (!r.ok) throw new Error(`Error ${r.status}: ${await r.text()}`);
-      const json = await r.json();
+      const json = await api.get(`/api/merge-requests?${params}`);
       if (loadIdRef.current !== myLoadId) return;
       setData(json);
       if (isTriage) setTriageItems(json.items ?? []);
 
       const refs = (json.items ?? []).map((mr) => ({ project_id: mr.project_id, iid: mr.iid }));
       if (refs.length > 0) {
-        const body = JSON.stringify(refs);
-        const headers = { "Content-Type": "application/json" };
-
         const applyPatch = (patch) => {
           if (loadIdRef.current !== myLoadId) return;
           setData((prev) => prev ? { ...prev, items: prev.items.map(patch) } : prev);
           if (isTriage) setTriageItems((prev) => prev.map(patch));
         };
 
-        const bgFetch = (url, onData) => {
-          fetch(url, { method: "POST", headers, body })
-            .then((res) => (res.ok ? res.json() : null))
-            .then((data) => { if (data) onData(data); })
-            .catch(() => {});
+        // A failed call fills the column with null: rows show nothing rather than loading forever.
+        const fillColumn = (url, field) => {
+          api.post(url, refs).catch(() => ({})).then((batch) =>
+            applyPatch((mr) => ({ ...mr, [field]: batch[`${mr.project_id}_${mr.iid}`] ?? null }))
+          );
         };
 
-        bgFetch("/api/merge-requests/activities", (activities) =>
-          applyPatch((mr) => ({
-            ...mr,
-            activities_after_approval: activities[`${mr.project_id}_${mr.iid}`] ?? null,
-          }))
-        );
-
-        bgFetch("/api/merge-requests/discussion-stats-batch", (statsBatch) =>
-          applyPatch((mr) => ({
-            ...mr,
-            discussion_stats: statsBatch[`${mr.project_id}_${mr.iid}`] ?? null,
-          }))
-        );
-
-        bgFetch("/api/merge-requests/pipelines-batch", (pipelinesBatch) =>
-          applyPatch((mr) => ({
-            ...mr,
-            pipeline: pipelinesBatch[`${mr.project_id}_${mr.iid}`] ?? null,
-          }))
-        );
+        fillColumn("/api/merge-requests/activities", "activities_after_approval");
+        fillColumn("/api/merge-requests/discussion-stats-batch", "discussion_stats");
+        fillColumn("/api/merge-requests/pipelines-batch", "pipeline");
       }
     } catch (e) {
-      if (loadIdRef.current !== myLoadId) return;
-      setError(e.message === "Failed to fetch" ? "Could not reach the server. Check your connection." : e.message);
+      if (loadIdRef.current !== myLoadId || e.status === 401) return;
+      setError(e.message);
     } finally {
       if (loadIdRef.current === myLoadId) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    if (view.kind === "todo") return;
+    if (!isMRView) return;
     load(filters, page, view.kind === "triage", selectedProjectIds);
-  }, [load, filters, page, view.kind, selectedProjectIds]);
+  }, [load, filters, page, isMRView, view.kind, selectedProjectIds]);
 
   useEffect(() => {
-    if (autoRefreshSecs === 0 || view.kind === "todo") return;
+    if (autoRefreshSecs === 0 || !isMRView) return;
     const isTriage = view.kind === "triage";
     const id = setInterval(() => {
       load(filters, page, isTriage, selectedProjectIds);
-      if (isTriage) {
-        fetch("/api/mentions").then((r) => r.json()).then(setMentionedMRs).catch(console.error);
-      }
+      if (isTriage) refreshMentions();
     }, autoRefreshSecs * 1000);
     return () => clearInterval(id);
-  }, [autoRefreshSecs, view.kind, load, filters, page, selectedProjectIds]);
+  }, [autoRefreshSecs, isMRView, view.kind, load, refreshMentions, filters, page, selectedProjectIds]);
 
   const setFilter = (key) => (e) => {
     setData(null);
@@ -255,7 +267,7 @@ function App({ activeProfile, profiles, onRefresh }) {
     if (!currentUser) return c;
     for (const mr of triageItems) {
       const b = classifyMR(mr, currentUser.id);
-      if (b && b !== "mention" && c[b] != null) c[b] += 1;
+      if (b) c[b] += 1;
     }
     return c;
   }, [triageItems, currentUser, mentionedMRs]);
@@ -269,6 +281,7 @@ function App({ activeProfile, profiles, onRefresh }) {
   }, [triageItems]);
 
   const totalOpen = triageItems.filter((m) => m.state === "opened").length;
+  const basicsFailures = Object.entries(basicsErrors);
 
   return (
     <div className="flex h-screen bg-gray-50 overflow-hidden">
@@ -289,6 +302,7 @@ function App({ activeProfile, profiles, onRefresh }) {
         todosCount={todoCount}
         activeProfile={activeProfile}
         profiles={profiles}
+        jiraUrl={jiraUrl}
         onRefresh={onRefresh}
         onProjectClick={handleProjectClick}
       />
@@ -301,30 +315,30 @@ function App({ activeProfile, profiles, onRefresh }) {
           </div>
 
           <div className="flex-1 flex justify-center px-4 max-w-2xl mx-auto w-full">
-            <div className="relative w-full">
-              <IconSearch className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
-              <input
-                type="text"
-                placeholder={view.kind === "browse" ? "Search by title…" : "Filter merge requests…"}
-                value={searchInput}
-                onChange={(e) => setSearchInput(e.target.value)}
-                className={`w-full text-sm bg-gray-50 border border-gray-200 rounded-md pl-8 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors ${searchInput ? "pr-7" : "pr-3"}`}
-              />
-              {searchInput && (
-                <button
-                  onClick={() => {
-                    setSearchInput("");
-                    setPage(1);
-                    setFilters((prev) => ({ ...prev, search: "" }));
-                  }}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                >
-                  <svg viewBox="0 0 16 16" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
-                    <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round"/>
-                  </svg>
-                </button>
-              )}
-            </div>
+            {isMRView && (
+              <div className="relative w-full">
+                <Icon name="search" className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
+                <input
+                  type="text"
+                  placeholder={view.kind === "browse" ? "Search by title…" : "Filter merge requests…"}
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
+                  className={`w-full text-sm bg-gray-50 border border-gray-200 rounded-md pl-8 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors ${searchInput ? "pr-7" : "pr-3"}`}
+                />
+                {searchInput && (
+                  <button
+                    onClick={() => {
+                      setSearchInput("");
+                      setPage(1);
+                      setFilters((prev) => ({ ...prev, search: "" }));
+                    }}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                  >
+                    <Icon name="close" />
+                  </button>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
@@ -336,7 +350,7 @@ function App({ activeProfile, profiles, onRefresh }) {
                   : "border-gray-200 bg-white text-gray-600 hover:bg-gray-50"
               }`}
             >
-              <IconFilter className="w-3.5 h-3.5" />
+              <Icon name="filter" />
               Projects
               {selectedProjectIds.size > 0 && (
                 <span className="bg-blue-600 text-white rounded-full px-1.5 text-[10px] font-bold leading-5">
@@ -353,15 +367,28 @@ function App({ activeProfile, profiles, onRefresh }) {
           </div>
         </header>
 
+        {basicsFailures.length > 0 && (
+          <Banner onRetry={loadBasics} className="m-3 mb-0 shrink-0">
+            {basicsFailures.map(([key, message]) => (
+              <div key={key}>Could not load {BASICS_LABELS[key]}: {message}</div>
+            ))}
+          </Banner>
+        )}
+
         {view.kind === "todo" ? (
           <TodoView />
+        ) : view.kind === "releases" ? (
+          <Releases
+            jiraUrl={jiraUrl} connected={activeProfile.jiraConnected} onConnected={onRefresh}
+            projects={projects} selectedProjectIds={selectedProjectIds}
+          />
         ) : view.kind === "triage" ? (
           <Triage
             data={data} loading={loading} error={error}
             currentUser={currentUser} view={view}
             refresh={() => {
               load(filters, page, true, selectedProjectIds);
-              fetch("/api/mentions").then((r) => r.json()).then(setMentionedMRs).catch(console.error);
+              refreshMentions();
             }}
             mentionedMRs={mentionedMRs}
             autoRefreshSecs={autoRefreshSecs}
@@ -374,7 +401,6 @@ function App({ activeProfile, profiles, onRefresh }) {
             filters={filters} setFilter={setFilter} projectOpts={projectOpts}
             needsMyApproval={needsMyApproval} setNeedsMyApproval={setNeedsMyApproval}
             refresh={() => load(filters, page, false, selectedProjectIds)}
-            searchQuery={filters.search}
             page={page} setPage={setPage} currentUser={currentUser}
             autoRefreshSecs={autoRefreshSecs}
             onAutoRefreshChange={setAutoRefreshSecs}

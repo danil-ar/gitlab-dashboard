@@ -6,6 +6,11 @@ const PROJECTS = [
   { id: 101, path_with_namespace: "sogaz/lk-seller" },
   { id: 102, path_with_namespace: "sogaz/lk-products" },
   { id: 103, path_with_namespace: "sogaz/lk-packages" },
+  { id: 104, path_with_namespace: "demo/lk-backend" },
+  { id: 105, path_with_namespace: "demo/lk-config" },
+  { id: 106, path_with_namespace: "demo/lk-legacy" },
+  { id: 107, path_with_namespace: "demo/lk-products" },
+  { id: 108, path_with_namespace: "demo/lk-web" },
 ];
 
 function mr(id, iid, pid, title, authorId = 2, approved = false, draft = false, pipeline = "success", updatedAfterApproval = false) {
@@ -59,12 +64,70 @@ const TODOS = [
     project: { path_with_namespace: "sogaz/lk-seller" }, body: null },
 ];
 
+function batchOf(field) {
+  return Object.fromEntries(MRS.filter((m) => m[field]).map((m) => [`${m.project_id}_${m.iid}`, m[field]]));
+}
+
 function send(res, data, status = 200) {
   res.writeHead(status, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
   res.end(JSON.stringify(data));
 }
 
 const MOCK_PROFILE = { id: "mock", label: ME.name, gitlabUrl: "http://localhost:8000" };
+
+const JIRA_URL = "http://localhost:8085/mock-jira";
+const GITLAB = "http://localhost:8085/mock-gitlab";
+let jiraConnected = false;
+
+function release(id, name, date, released, issue) {
+  return {
+    id, name, released, release_date: date,
+    url: `${JIRA_URL}/projects/DEMO/versions/${id}`,
+    release_issue: issue,
+    release_issue_url: `${JIRA_URL}/browse/${issue}`,
+  };
+}
+
+const RELEASES = [
+  release("3", "Release 09.11.2026", "2026-11-09", false, "REL-3"),
+  release("4", "Release 23.11.2026", "2026-11-23", false, "REL-4"),
+  release("2", "Release 29.10.2026", "2026-10-30", true, "REL-2"),
+];
+
+function repo(name, group, state, latest_tag, rollback_tag, deploy_tag, issues, warnings = []) {
+  return {
+    path: `demo/${name}`, name, web_url: `${GITLAB}/demo/${name}`, group, state,
+    latest_tag, rollback_tag, deploy_tag, issues, warnings, changes: [], error: null,
+  };
+}
+
+function issue(key, summary, assignee, links) {
+  return { key, summary, assignee, type: "Task", url: `${JIRA_URL}/browse/${key}`, links };
+}
+
+function change(repoName, iid, state) {
+  return { ref: `!${iid}`, state, repo: repoName, path: `demo/${repoName}`, url: `${GITLAB}/demo/${repoName}/-/merge_requests/${iid}` };
+}
+
+const RELEASE_PLAN = {
+  issues: [
+    issue("DEMO-101", "Switch the client card to the new contracts source", "Dev User", [change("lk-backend", 41, "merged")]),
+    issue("DEMO-102", "Sales points: skip the deal card on create", "Colleague", [change("lk-web", 87, "merged"), change("lk-backend", 42, "opened")]),
+    issue("DEMO-103", "Fix config rendering", "Colleague", [change("lk-products", 12, "merged"), change("lk-products", 11, "closed")]),
+    issue("DEMO-104", "Remove the unused consumer", "Dev User", [change("lk-legacy", 5, "merged")]),
+    issue("DEMO-105", "Update the release checklist", "Colleague", []),
+  ],
+  total_issues: 9,
+  other_statuses: [{ name: "Testing", count: 2 }, { name: "Withdrawn", count: 2 }],
+  repos: [
+    repo("lk-backend", "backend", "new_tag", "v4.32.0", "v4.32.0", "v4.33.0", ["DEMO-101", "DEMO-102"], ["!42 is not merged yet (DEMO-102)"]),
+    repo("lk-config", "backend", "no_tags", null, null, null, ["DEMO-104"], ["GitLab has no vX.Y.Z tags here, so there is no version to continue from. Left out of the plan: tick it and enter a tag if this repo is deployed by tag."]),
+    repo("lk-legacy", "backend", "older_tag", "v1.5.0", "v1.1.0", "v1.2.0", ["DEMO-104"], ["Everything is already in v1.2.0 and newer tags exist. Left out of the plan: include it if that tag belongs to this release."]),
+    repo("lk-products", "backend", "tagged", "v1.19.0", "v1.18.0", "v1.19.0", ["DEMO-103"]),
+    repo("lk-web", "frontend", "new_tag", "v2.7.0", "v2.7.0", "v2.8.0", ["DEMO-102"]),
+  ],
+  warnings: [],
+};
 
 const server = http.createServer((req, res) => {
   if (req.method === "OPTIONS") {
@@ -80,7 +143,7 @@ const server = http.createServer((req, res) => {
 
   // auth — mock always has one pre-configured profile, no real validation
   if (path === "/api/auth/profiles")
-    return send(res, { profiles: [MOCK_PROFILE], activeId: MOCK_PROFILE.id });
+    return send(res, { profiles: [{ ...MOCK_PROFILE, jiraConnected }], activeId: MOCK_PROFILE.id, jiraUrl: JIRA_URL });
   if (path === "/api/auth/login" && req.method === "POST")
     return send(res, { profile: MOCK_PROFILE, user: ME });
   if (path === "/api/auth/switch" && req.method === "POST")
@@ -102,6 +165,13 @@ const server = http.createServer((req, res) => {
     return send(res, { items, total: items.length, total_pages: 1, page: 1 });
   }
 
+  if (path === "/api/merge-requests/activities" && req.method === "POST")
+    return send(res, batchOf("activities_after_approval"));
+  if (path === "/api/merge-requests/discussion-stats-batch" && req.method === "POST")
+    return send(res, batchOf("discussion_stats"));
+  if (path === "/api/merge-requests/pipelines-batch" && req.method === "POST")
+    return send(res, batchOf("pipeline"));
+
   if (path.match(/^\/api\/merge-requests\/\d+\/\d+\/approve$/) && req.method === "POST")
     return send(res, { ok: true });
 
@@ -116,6 +186,15 @@ const server = http.createServer((req, res) => {
 
   if (path.match(/^\/api\/todos\/\d+\/done$/) && req.method === "POST")
     return send(res, { ok: true });
+
+  if (path === "/api/jira/connect" && req.method === "POST") {
+    jiraConnected = true;
+    return send(res, { ok: true });
+  }
+  if (path === "/api/jira/releases")
+    return send(res, { project: "DEMO", status: "Included in release", releases: RELEASES });
+  if (path.match(/^\/api\/jira\/releases\/\d+\/plan$/))
+    return send(res, RELEASE_PLAN);
 
   send(res, { error: "not found" }, 404);
 });

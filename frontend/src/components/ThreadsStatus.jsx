@@ -1,5 +1,5 @@
-import { useRef, useState, useEffect } from "react";
-import { IconSpin } from "./icons";
+import { useState } from "react";
+import { Icon } from "./icons";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { timeAgo } from "../utils/timeAgo";
 import { renderMd } from "../utils/renderMd";
@@ -38,8 +38,8 @@ export function ThreadPreview({ p, url, dim = false }) {
         </div>
       </a>
 
-      {(hasReplies || p.replies > 0) && (
-        <div className={`border-t ${dim ? "border-gray-100" : "border-gray-100"}`}>
+      {p.replies > 0 && (
+        <div className="border-t border-gray-100">
           {hasReplies ? (
             <button
               onClick={() => setExpanded(x => !x)}
@@ -83,7 +83,7 @@ export function ThreadPreview({ p, url, dim = false }) {
   );
 }
 
-function TooltipContent({ stats, mrUrl }) {
+function ThreadList({ stats, mrUrl }) {
   const unresolved = stats.unresolved_previews ?? [];
   const resolved   = stats.resolved_previews   ?? [];
 
@@ -115,63 +115,23 @@ function TooltipContent({ stats, mrUrl }) {
   );
 }
 
-const chatIcon = (
-  <svg viewBox="0 0 16 16" className="w-3 h-3 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.5">
-    <path d="M2 3.5A1.5 1.5 0 0 1 3.5 2h9A1.5 1.5 0 0 1 14 3.5v6A1.5 1.5 0 0 1 12.5 11H9l-3 3v-3H3.5A1.5 1.5 0 0 1 2 9.5v-6Z" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
-);
-
-const spinIcon = <IconSpin className="w-3 h-3 shrink-0" />;
-
-export default function ThreadsStatus({ stats: propStats, projectId, iid, mrUrl }) {
-  const fetchedRef  = useRef(false);
-  const abortRef    = useRef(null);
-  const [fetchedStats, setFetchedStats] = useState(null);
-  const [loading, setLoading]           = useState(false);
-
-  const stats = propStats ?? fetchedStats;
-
-  useEffect(() => {
-    fetchedRef.current = false;
-    setFetchedStats(null);
-    setLoading(false);
-    return () => abortRef.current?.abort();
-  }, [projectId, iid]);
-
-  const handleOpen = (open) => {
-    if (!open || stats || fetchedRef.current) return;
-    fetchedRef.current = true;
-    setLoading(true);
-    abortRef.current = new AbortController();
-    fetch(`/api/projects/${projectId}/merge_requests/${iid}/discussion-stats`, { signal: abortRef.current.signal })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((s) => { setFetchedStats(s); setLoading(false); })
-      .catch((e) => { if (e.name !== "AbortError") { fetchedRef.current = false; setLoading(false); } });
-  };
-
-  if (propStats === undefined && fetchedStats === null) {
+export default function ThreadsStatus({ stats, mrUrl }) {
+  if (stats === undefined) {
     return <div className="w-8 h-3 bg-gray-200 rounded animate-pulse" />;
   }
 
-  if (stats !== null && stats !== undefined && stats.total === 0) {
+  if (!stats || stats.total === 0) {
     return <span className="text-[11px] text-gray-400">—</span>;
   }
 
-  const allResolved    = stats ? stats.resolved === stats.total : false;
-  const hasPreviewable = stats
-    ? (stats.unresolved_previews?.length ?? 0) + (stats.resolved_previews?.length ?? 0) > 0
-    : false;
-
   return (
-    <Popover onOpenChange={handleOpen}>
+    <Popover>
       <PopoverTrigger asChild>
         <button className={`flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer rounded px-1.5 py-0.5 -mx-1.5 transition-colors hover:bg-gray-100 hover:ring-1 hover:ring-gray-200 data-[state=open]:bg-gray-100 data-[state=open]:ring-1 data-[state=open]:ring-gray-200 ${
-          stats ? (allResolved ? "text-green-600" : "text-orange-500") : "text-gray-400"
+          stats.resolved === stats.total ? "text-green-600" : "text-orange-500"
         }`}>
-          {loading ? spinIcon : chatIcon}
-          {stats != null && (
-            <span className="tabular-nums animate-in fade-in duration-300">{stats.resolved}/{stats.total}</span>
-          )}
+          <Icon name="chat" className="w-3 h-3 shrink-0" />
+          <span className="tabular-nums animate-in fade-in duration-300">{stats.resolved}/{stats.total}</span>
         </button>
       </PopoverTrigger>
       <PopoverContent
@@ -184,14 +144,7 @@ export default function ThreadsStatus({ stats: propStats, projectId, iid, mrUrl 
           [&::-webkit-scrollbar-thumb]:bg-gray-200
           [&::-webkit-scrollbar-thumb]:rounded-full"
       >
-        {loading && (
-          <div className="px-4 py-3 flex items-center gap-2 text-gray-400 text-xs">
-            {spinIcon} Loading threads…
-          </div>
-        )}
-        {!loading && stats && (
-          <TooltipContent stats={stats} mrUrl={mrUrl} />
-        )}
+        <ThreadList stats={stats} mrUrl={mrUrl} />
       </PopoverContent>
     </Popover>
   );

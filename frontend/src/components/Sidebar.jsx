@@ -1,48 +1,52 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import Avatar from "./Avatar";
-import { BucketIcon } from "./icons";
+import { BucketIcon, Icon } from "./icons";
 import { Separator } from "@/components/ui/separator";
 import AboutModal from "./AboutModal";
+import AccountForm from "./AccountForm";
+import { api } from "../api";
+
+const navClass = (active) => `group w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors ${
+  active
+    ? "bg-white shadow-sm text-gray-900 font-semibold"
+    : "text-gray-600 hover:bg-gray-200/60 hover:text-gray-900"
+}`;
+
+const SECTION_TITLE = "px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-400";
+
+const BROWSE_ICON = "w-3.5 h-3.5 shrink-0";
 
 export default function Sidebar({
   counts, totalOpen, view, setView, navigateBrowse, filters, projects,
   selectedProjectIds, openProjectSettings, currentUser, projectCounts, todosCount,
-  activeProfile, profiles, onRefresh, onProjectClick,
+  activeProfile, profiles, jiraUrl, onRefresh, onProjectClick,
 }) {
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [showAddAccount, setShowAddAccount]   = useState(false);
   const [showAbout, setShowAbout]             = useState(false);
 
-  const handleSwitch = async (profileId) => {
-    setShowProfileMenu(false);
-    await fetch("/api/auth/switch", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ profile_id: profileId }),
-    });
+  const runThenRefresh = async (request) => {
+    await request.catch(console.error);
     await onRefresh();
   };
 
-  const handleLogout = async () => {
+  const handleSwitch = (profileId) => {
     setShowProfileMenu(false);
-    await fetch("/api/auth/logout", { method: "POST" });
-    await onRefresh();
+    runThenRefresh(api.post("/api/auth/switch", { profile_id: profileId }));
   };
 
-  const handleRemove = async (profileId) => {
-    await fetch(`/api/auth/profiles/${profileId}`, { method: "DELETE" });
-    await onRefresh();
+  const handleLogout = () => {
+    setShowProfileMenu(false);
+    runThenRefresh(api.post("/api/auth/logout"));
   };
+
+  const handleRemove = (profileId) => runThenRefresh(api.delete(`/api/auth/profiles/${profileId}`));
 
   const triageItem = (id, label, count, accent, urgent) => (
     <button
       key={id}
       onClick={() => setView({ kind: "triage", bucket: id })}
-      className={`group w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors ${
-        view.kind === "triage" && view.bucket === id
-          ? "bg-white shadow-sm text-gray-900 font-semibold"
-          : "text-gray-600 hover:bg-gray-200/60 hover:text-gray-900"
-      }`}
+      className={navClass(view.kind === "triage" && view.bucket === id)}
     >
       <BucketIcon id={id} className={`w-3.5 h-3.5 shrink-0 ${accent ?? "text-gray-400"}`} />
       <span className="flex-1 text-left">{label}</span>
@@ -55,18 +59,9 @@ export default function Sidebar({
   );
 
   const browseStates = [
-    {
-      state: "opened", label: "All open", count: totalOpen,
-      icon: <svg viewBox="0 0 16 16" className="w-3.5 h-3.5 shrink-0 text-gray-400" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="5.5"/></svg>,
-    },
-    {
-      state: "merged", label: "Merged",
-      icon: <svg viewBox="0 0 16 16" className="w-3.5 h-3.5 shrink-0 text-purple-500" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M4.5 3v10M11.5 7v6M4.5 3a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Zm0 10a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3Zm7 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3ZM11.5 7c-3 0-4-1.5-4-3" strokeLinecap="round" strokeLinejoin="round"/></svg>,
-    },
-    {
-      state: "closed", label: "Closed",
-      icon: <svg viewBox="0 0 16 16" className="w-3.5 h-3.5 shrink-0 text-gray-400" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="5.5"/><path d="M5.5 5.5l5 5m0-5l-5 5" strokeLinecap="round"/></svg>,
-    },
+    { state: "opened", label: "All open", count: totalOpen, icon: <Icon name="circle" className={`${BROWSE_ICON} text-gray-400`} /> },
+    { state: "merged", label: "Merged", icon: <Icon name="mr" className={`${BROWSE_ICON} text-purple-500`} /> },
+    { state: "closed", label: "Closed", icon: <Icon name="circleX" className={`${BROWSE_ICON} text-gray-400`} /> },
   ];
 
   const visibleProjects = (selectedProjectIds.size > 0
@@ -80,15 +75,13 @@ export default function Sidebar({
         <div className="flex items-center gap-2 px-4 py-3 border-b border-gray-200">
           <button onClick={() => setShowAddAccount(false)}
             className="text-gray-400 hover:text-gray-700 p-1 rounded" title="Back">
-            <svg viewBox="0 0 16 16" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <path d="M10 3L5 8l5 5" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
+            <Icon name="chevronLeft" className="w-4 h-4" />
           </button>
           <span className="text-sm font-medium text-gray-700">Add account</span>
         </div>
         <div className="flex-1 overflow-auto p-4">
-          <AddAccountPanel
-            onDone={async () => { setShowAddAccount(false); await onRefresh(); }}
+          <AccountForm
+            onSuccess={async () => { setShowAddAccount(false); await onRefresh(); }}
             onCancel={() => setShowAddAccount(false)}
           />
         </div>
@@ -101,23 +94,13 @@ export default function Sidebar({
     {showAbout && <AboutModal onClose={() => setShowAbout(false)} />}
     <aside className="w-72 shrink-0 bg-gray-100 flex flex-col h-full overflow-hidden">
       <div className="p-3 space-y-0.5">
-        <p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Triage</p>
+        <p className={SECTION_TITLE}>Triage</p>
         {triageItem("needs",    "Needs your review",   counts.needs,    "text-orange-600", counts.needs > 0)}
         {triageItem("approved", "You approved",        counts.approved, "text-green-600")}
         {triageItem("mine",     "Your open MRs",       counts.mine,     "text-blue-600")}
         {triageItem("mention",  "Mentioned you",       counts.mention,  "text-purple-500")}
-        <button
-          onClick={() => setView({ kind: "todo" })}
-          className={`group w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors ${
-            view.kind === "todo"
-              ? "bg-white shadow-sm text-gray-900 font-semibold"
-              : "text-gray-600 hover:bg-gray-200/60 hover:text-gray-900"
-          }`}
-        >
-          <svg viewBox="0 0 16 16" className="w-3.5 h-3.5 shrink-0 text-blue-400" fill="none" stroke="currentColor" strokeWidth="1.5">
-            <rect x="2" y="2" width="12" height="12" rx="1.5"/>
-            <path d="M5 8l2 2 4-4" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
+        <button onClick={() => setView({ kind: "todo" })} className={navClass(view.kind === "todo")}>
+          <Icon name="todo" className="w-3.5 h-3.5 shrink-0 text-blue-400" />
           <span className="flex-1 text-left">To-Do List</span>
           {todosCount > 0 && (
             <span className="text-[11px] font-semibold tabular-nums px-1.5 py-0.5 rounded-full bg-gray-200 text-gray-500 group-hover:bg-gray-300">
@@ -129,14 +112,10 @@ export default function Sidebar({
 
       <Separator className="bg-gray-200" />
       <div className="p-3 space-y-0.5">
-        <p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Browse</p>
+        <p className={SECTION_TITLE}>Browse</p>
         {browseStates.map(({ state, label, count, icon }) => (
           <button key={state} onClick={() => navigateBrowse(state)}
-            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors ${
-              view.kind === "browse" && filters.state === state
-                ? "bg-white shadow-sm text-gray-900 font-semibold"
-                : "text-gray-600 hover:bg-gray-200/60 hover:text-gray-900"
-            }`}
+            className={navClass(view.kind === "browse" && filters.state === state)}
           >
             {icon}
             <span className="flex-1 text-left">{label}</span>
@@ -145,6 +124,12 @@ export default function Sidebar({
             )}
           </button>
         ))}
+        {jiraUrl && (
+          <button onClick={() => setView({ kind: "releases" })} className={navClass(view.kind === "releases")}>
+            <Icon name="tag" className={`${BROWSE_ICON} text-teal-600`} />
+            <span className="flex-1 text-left">Releases</span>
+          </button>
+        )}
       </div>
 
       <Separator className="bg-gray-200" />
@@ -155,10 +140,7 @@ export default function Sidebar({
           </p>
           <button onClick={openProjectSettings} title="Configure projects"
             className="text-gray-400 hover:text-gray-700 w-4 h-4 flex items-center justify-center rounded">
-            <svg viewBox="0 0 16 16" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <path d="M6.5 2h3l.5 1.5 1.2-.5 2 2-.5 1.2L14 7v2l-1.3.8.5 1.2-2 2-1.2-.5L9.5 14h-3l-.5-1.5-1.2.5-2-2 .5-1.2L2 9V7l1.3-.8-.5-1.2 2-2 1.2.5L6.5 2Z" strokeLinejoin="round"/>
-              <circle cx="8" cy="8" r="2"/>
-            </svg>
+            <Icon name="gear" />
           </button>
         </div>
         <div className="overflow-y-auto flex-1 -mx-1 px-1 space-y-0.5">
@@ -192,16 +174,14 @@ export default function Sidebar({
               {currentUser ? `@${currentUser.username}` : activeProfile?.gitlabUrl ?? ""}
             </div>
           </div>
-          <svg viewBox="0 0 16 16" className={`w-3.5 h-3.5 shrink-0 text-gray-400 transition-transform ${showProfileMenu ? "rotate-180" : ""}`} fill="none" stroke="currentColor" strokeWidth="1.5">
-            <path d="M4 6l4 4 4-4" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
+          <Icon name="chevronDown" className={`w-3.5 h-3.5 shrink-0 text-gray-400 transition-transform ${showProfileMenu ? "rotate-180" : ""}`} />
         </button>
 
         {showProfileMenu && (
           <div className="absolute bottom-full left-0 right-0 bg-white border border-gray-200 rounded-t-lg shadow-xl overflow-hidden z-10">
             {profiles.length > 1 && (
               <>
-                <p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Switch account</p>
+                <p className={SECTION_TITLE}>Switch account</p>
                 {profiles.map((p) => (
                   <div key={p.id} className="flex items-center group">
                     <button
@@ -217,9 +197,7 @@ export default function Sidebar({
                       </span>
                       <span className="flex-1 text-left truncate">{p.label}</span>
                       {p.id === activeProfile?.id && (
-                        <svg viewBox="0 0 16 16" className="w-3.5 h-3.5 text-blue-500 shrink-0" fill="none" stroke="currentColor" strokeWidth="2">
-                          <path d="M3 8.5 6.5 12 13 4.5" strokeLinecap="round" strokeLinejoin="round"/>
-                        </svg>
+                        <Icon name="check" className="w-3.5 h-3.5 text-blue-500 shrink-0" strokeWidth={2} />
                       )}
                     </button>
                     {p.id !== activeProfile?.id && (
@@ -228,9 +206,7 @@ export default function Sidebar({
                         className="px-2 py-2 text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all"
                         title="Remove account"
                       >
-                        <svg viewBox="0 0 16 16" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
-                          <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round"/>
-                        </svg>
+                        <Icon name="close" />
                       </button>
                     )}
                   </div>
@@ -242,18 +218,14 @@ export default function Sidebar({
               onClick={() => { setShowProfileMenu(false); setShowAddAccount(true); }}
               className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors"
             >
-              <svg viewBox="0 0 16 16" className="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <circle cx="8" cy="8" r="5.5"/><path d="M8 5.5v5M5.5 8h5" strokeLinecap="round"/>
-              </svg>
+              <Icon name="circlePlus" className="w-3.5 h-3.5 text-gray-400" />
               Add account
             </button>
             <button
               onClick={handleLogout}
               className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-red-500 hover:bg-red-50 transition-colors"
             >
-              <svg viewBox="0 0 16 16" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <path d="M6 2H3a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3M10.5 11l3-3-3-3M13.5 8H6" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
+              <Icon name="signOut" />
               Sign out
             </button>
             <button
@@ -268,91 +240,5 @@ export default function Sidebar({
       </div>
     </aside>
     </>
-  );
-}
-
-// ─── add account panel ────────────────────────────────────────────────────────
-
-function AddAccountPanel({ onDone, onCancel }) {
-  const [url, setUrl]             = useState("https://");
-  const [token, setToken]         = useState("");
-  const [label, setLabel]         = useState("");
-  const [showToken, setShowToken] = useState(false);
-  const [loading, setLoading]     = useState(false);
-  const [error, setError]         = useState(null);
-
-  useEffect(() => {
-    fetch("/api/config")
-      .then((r) => r.json())
-      .then((d) => { if (d.gitlab_url) setUrl(d.gitlab_url); })
-      .catch(() => {});
-  }, []);
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-    setError(null);
-    try {
-      const r = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          gitlab_url: url.trim().replace(/\/$/, ""),
-          token: token.trim(),
-          label: label.trim(),
-        }),
-      });
-      if (!r.ok) {
-        const data = await r.json().catch(() => ({}));
-        throw new Error(data.detail || `Error ${r.status}`);
-      }
-      await onDone();
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <form onSubmit={handleSubmit} className="space-y-3">
-      <div>
-        <label className="block text-xs font-medium text-gray-700 mb-1">GitLab URL</label>
-        <input type="url" required value={url} onChange={(e) => setUrl(e.target.value)}
-          placeholder="https://gitlab.example.com"
-          className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" />
-      </div>
-      <div>
-        <label className="block text-xs font-medium text-gray-700 mb-1">Token</label>
-        <div className="relative">
-          <input type={showToken ? "text" : "password"} required value={token}
-            onChange={(e) => setToken(e.target.value)} placeholder="glpat-…"
-            className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 pr-12 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono" />
-          <button type="button" onClick={() => setShowToken((s) => !s)}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400 hover:text-gray-600">
-            {showToken ? "Hide" : "Show"}
-          </button>
-        </div>
-      </div>
-      <div>
-        <label className="block text-xs font-medium text-gray-700 mb-1">
-          Label <span className="font-normal text-gray-400">(optional)</span>
-        </label>
-        <input type="text" value={label} onChange={(e) => setLabel(e.target.value)}
-          placeholder="Work account"
-          className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" />
-      </div>
-      {error && <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 break-all">{error}</p>}
-      <div className="flex gap-2">
-        <button type="button" onClick={onCancel}
-          className="flex-1 py-2 border border-gray-200 rounded-lg text-sm text-gray-600 hover:bg-gray-50 transition-colors">
-          Cancel
-        </button>
-        <button type="submit" disabled={loading}
-          className="flex-1 py-2 bg-orange-500 hover:bg-orange-600 text-white text-sm font-semibold rounded-lg transition-colors disabled:opacity-50">
-          {loading ? "…" : "Connect"}
-        </button>
-      </div>
-    </form>
   );
 }

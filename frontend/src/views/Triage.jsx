@@ -1,18 +1,38 @@
 import { useState, useMemo, useEffect } from "react";
 import { BUCKETS } from "../constants";
+import { api } from "../api";
 import { classifyMR } from "../utils/classifyMR";
 import { timeAgo } from "../utils/timeAgo";
 import { BucketIcon, IconSpin } from "../components/icons";
 import { Button } from "@/components/ui/button";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import Banner from "../components/Banner";
 import BucketSection from "../components/BucketSection";
 import RefreshButton from "../components/RefreshButton";
 
+const BUCKET_IDS = ["needs", "approved", "mine", "mention"];
+
+// The first copy wins. Mentions come last, and their copies lack the data loaded for the main list.
+function uniqueById(mrs) {
+  const seen = new Set();
+  return mrs.filter((mr) => !seen.has(mr.id) && seen.add(mr.id));
+}
+
+const approvalUrl = (mr, action) => `/api/merge-requests/${mr.project_id}/${mr.iid}/${action}`;
+
+async function reapprove(mr) {
+  await api.post(approvalUrl(mr, "unapprove"));
+  try {
+    await api.post(approvalUrl(mr, "approve"));
+  } catch (e) {
+    throw new Error(`your approval was withdrawn, but approving again failed: ${e.message}`);
+  }
+}
+
 export default function Triage({ data, loading, error, currentUser, view, refresh, mentionedMRs, autoRefreshSecs, onAutoRefreshChange, searchQuery = "" }) {
   const [selectedIds, setSelectedIds] = useState(new Set());
-  const [approving, setApproving]     = useState(false);
-  const [reapproving, setReapproving] = useState(false);
-  const [unapproving, setUnapproving] = useState(false);
+  const [busy, setBusy]               = useState(null);
+  const [bulkErrors, setBulkErrors]   = useState([]);
   const [doneMsg, setDoneMsg]         = useState(null);
   const [sortBy, setSortBy]           = useState("newest");
 
@@ -34,84 +54,51 @@ export default function Triage({ data, loading, error, currentUser, view, refres
   const classified = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     const match = (mr) => !q || mr.title.toLowerCase().includes(q);
-    const out = { needs: [], approved: [], mine: [], mention: (mentionedMRs ?? []).filter(match) };
+    const out = { needs: [], approved: [], mine: [], mention: mentionedMRs.filter(match) };
     if (!currentUser) return out;
     for (const mr of all) {
       if (!match(mr)) continue;
       const b = classifyMR(mr, currentUser.id);
       if (b) out[b].push(mr);
     }
-    ["needs", "approved", "mine", "mention"].forEach((k) => out[k].sort(sortFn));
+    BUCKET_IDS.forEach((k) => out[k].sort(sortFn));
     return out;
   }, [all, currentUser, mentionedMRs, sortFn, searchQuery]);
 
-  const order = view.bucket && view.bucket !== "all"
-    ? [view.bucket, ...["needs", "approved", "mine", "mention"].filter((k) => k !== view.bucket)]
-    : ["needs", "approved", "mine", "mention"];
+  const order = [view.bucket, ...BUCKET_IDS.filter((k) => k !== view.bucket)];
 
-  const allVisible = order.flatMap((id) => classified[id]);
+  const allVisible = uniqueById(BUCKET_IDS.flatMap((id) => classified[id]));
   const allSelected = allVisible.length > 0 && allVisible.every((mr) => selectedIds.has(mr.id));
 
   const toggleAll = () => {
     setSelectedIds(allSelected ? new Set() : new Set(allVisible.map((mr) => mr.id)));
   };
 
-  const handleApprove = async () => {
-    if (selectedIds.size === 0 || approving) return;
-    setApproving(true);
-    const mrs = allVisible.filter((mr) => selectedIds.has(mr.id));
-    await Promise.allSettled(
-      mrs.map((mr) =>
-        fetch(`/api/merge-requests/${mr.project_id}/${mr.iid}/approve`, { method: "POST" })
-      )
+  const iApproved = (mr) => mr.approved_by_users?.some((u) => u.id === currentUser?.id);
+  const selected = allVisible.filter((mr) => selectedIds.has(mr.id));
+  const toApprove   = selected.filter((mr) => !iApproved(mr));
+  const toReapprove = selected.filter((mr) => mr.activities_after_approval);
+  const toUnapprove = selected.filter(iApproved);
+
+  const runBulk = async (kind, mrs, action, doneVerb) => {
+    if (busy || mrs.length === 0) return;
+    setBusy(kind);
+    setBulkErrors([]);
+    const results = await Promise.allSettled(mrs.map(action));
+    const failed = mrs.flatMap((mr, i) =>
+      results[i].status === "rejected" ? [{ mr, message: results[i].reason.message }] : []
     );
-    setSelectedIds(new Set());
-    setApproving(false);
-    setDoneMsg(`✓ Approved ${mrs.length} MR${mrs.length > 1 ? "s" : ""}`);
-    setTimeout(() => setDoneMsg(null), 2500);
+    const succeeded = mrs.length - failed.length;
+    setBusy(null);
+    setBulkErrors(failed);
+    // Failed MRs stay selected so the action can be retried.
+    setSelectedIds(new Set(failed.map(({ mr }) => mr.id)));
+    if (succeeded > 0) {
+      setDoneMsg(`✓ ${doneVerb} ${succeeded} MR${succeeded > 1 ? "s" : ""}`);
+      setTimeout(() => setDoneMsg(null), 2500);
+    }
     refresh();
   };
-
-  const handleReapprove = async () => {
-    if (reapproving) return;
-    const mrs = allVisible.filter((mr) => selectedIds.has(mr.id) && mr.activities_after_approval);
-    if (!mrs.length) return;
-    setReapproving(true);
-    await Promise.allSettled(
-      mrs.map(async (mr) => {
-        await fetch(`/api/merge-requests/${mr.project_id}/${mr.iid}/unapprove`, { method: "POST" });
-        await fetch(`/api/merge-requests/${mr.project_id}/${mr.iid}/approve`,   { method: "POST" });
-      })
-    );
-    setSelectedIds(new Set());
-    setReapproving(false);
-    refresh();
-  };
-
-  const canReapprove = !reapproving && allVisible.some(
-    (mr) => selectedIds.has(mr.id) && mr.activities_after_approval
-  );
-
-  const handleUnapprove = async () => {
-    if (unapproving) return;
-    const mrs = allVisible.filter(
-      (mr) => selectedIds.has(mr.id) && mr.approved_by_users?.some((u) => u.id === currentUser?.id)
-    );
-    if (!mrs.length) return;
-    setUnapproving(true);
-    await Promise.allSettled(
-      mrs.map((mr) =>
-        fetch(`/api/merge-requests/${mr.project_id}/${mr.iid}/unapprove`, { method: "POST" })
-      )
-    );
-    setSelectedIds(new Set());
-    setUnapproving(false);
-    refresh();
-  };
-
-  const canUnapprove = !unapproving && allVisible.some(
-    (mr) => selectedIds.has(mr.id) && mr.approved_by_users?.some((u) => u.id === currentUser?.id)
-  );
 
   const mineHint = (() => {
     if (!classified.mine.length) return null;
@@ -140,20 +127,18 @@ export default function Triage({ data, loading, error, currentUser, view, refres
     mention:  classified.mention.length > 0 ? "tagged in discussion" : null,
   };
 
+  const warnings = data?.warnings ?? [];
+  const openCount = all.filter((m) => m.state === "opened").length;
+
   return (
     <main className="flex-1 overflow-auto">
       <div className="sticky top-0 z-20">
         <header className="px-5 py-3.5 border-b border-gray-200 flex items-center gap-3 bg-white shrink-0">
-          <BucketIcon
-            id={view.bucket && view.bucket !== "all" ? view.bucket : "needs"}
-            className="w-5 h-5 text-orange-600 shrink-0"
-          />
+          <BucketIcon id={view.bucket} className="w-5 h-5 text-orange-600 shrink-0" />
           <div className="min-w-0">
-            <h2 className="text-sm font-semibold text-gray-900">
-              {view.bucket && BUCKETS[view.bucket] ? BUCKETS[view.bucket].label : "Triage queue"}
-            </h2>
+            <h2 className="text-sm font-semibold text-gray-900">{BUCKETS[view.bucket].label}</h2>
             <p className="text-xs text-gray-500">
-              {(() => { const n = all.filter((m) => m.state === "opened").length; return `${n} open merge request${n !== 1 ? "s" : ""} grouped by what needs your attention`; })()}
+              {`${openCount} open merge request${openCount !== 1 ? "s" : ""} grouped by what needs your attention`}
             </p>
           </div>
           <div className="ml-auto shrink-0">
@@ -175,26 +160,27 @@ export default function Triage({ data, loading, error, currentUser, view, refres
           {doneMsg ? (
             <span className="text-green-600 font-medium text-xs animate-in fade-in duration-200">{doneMsg}</span>
           ) : (
-            <TooltipProvider>
+            <>
               <Button
                 size="xs"
-                onClick={handleApprove}
-                disabled={selectedIds.size === 0 || approving}
+                onClick={() => runBulk("approve", toApprove, (mr) => api.post(approvalUrl(mr, "approve")), "Approved")}
+                disabled={toApprove.length === 0 || busy !== null}
                 variant="ghost"
               >
-                {approving ? <IconSpin /> : "✓"} Approve
+                {busy === "approve" ? <IconSpin /> : "✓"} Approve
               </Button>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <span className="inline-flex">
-                    <Button variant="ghost" size="xs" onClick={handleReapprove} disabled={!canReapprove}
+                    <Button variant="ghost" size="xs" disabled={toReapprove.length === 0 || busy !== null}
+                      onClick={() => runBulk("reapprove", toReapprove, reapprove, "Re-approved")}
                       className="text-amber-700 hover:bg-amber-100 hover:text-amber-700">
-                      {reapproving ? <IconSpin /> : "↺"} Re-approve
+                      {busy === "reapprove" ? <IconSpin /> : "↺"} Re-approve
                     </Button>
                   </span>
                 </TooltipTrigger>
                 <TooltipContent side="bottom">
-                  {canReapprove
+                  {toReapprove.length > 0
                     ? "Re-approve selected MRs that were updated after your approval"
                     : "Select MRs with new activity after your approval"}
                 </TooltipContent>
@@ -202,19 +188,20 @@ export default function Triage({ data, loading, error, currentUser, view, refres
               <Tooltip>
                 <TooltipTrigger asChild>
                   <span className="inline-flex">
-                    <Button variant="ghost" size="xs" onClick={handleUnapprove} disabled={!canUnapprove}
+                    <Button variant="ghost" size="xs" disabled={toUnapprove.length === 0 || busy !== null}
+                      onClick={() => runBulk("unapprove", toUnapprove, (mr) => api.post(approvalUrl(mr, "unapprove")), "Unapproved")}
                       className="text-red-600 hover:bg-red-50 hover:text-red-600">
-                      {unapproving ? <IconSpin /> : "✕"} Unapprove
+                      {busy === "unapprove" ? <IconSpin /> : "✕"} Unapprove
                     </Button>
                   </span>
                 </TooltipTrigger>
                 <TooltipContent side="bottom">
-                  {canUnapprove
+                  {toUnapprove.length > 0
                     ? "Withdraw your approval from selected MRs"
                     : "Select MRs you have already approved"}
                 </TooltipContent>
               </Tooltip>
-            </TooltipProvider>
+            </>
           )}
           <div className="ml-auto flex items-center gap-1.5 text-gray-400">
             <span>Sort:</span>
@@ -231,11 +218,23 @@ export default function Triage({ data, loading, error, currentUser, view, refres
         </div>
       </div>
 
-      {error && (
-        <div className="mx-5 mt-4 p-3 bg-red-50 border border-red-200 rounded-md text-sm text-red-700 flex items-center gap-3">
-          <span className="flex-1">{error}</span>
-          <button onClick={refresh} className="shrink-0 text-red-600 hover:text-red-800 font-medium underline underline-offset-2">Retry</button>
-        </div>
+      {bulkErrors.length > 0 && (
+        <Banner onDismiss={() => setBulkErrors([])} className="mx-5 mt-4">
+          {bulkErrors.map(({ mr, message }) => (
+            <div key={mr.id}>
+              <a href={mr.web_url} target="_blank" rel="noopener noreferrer" className="font-medium underline underline-offset-2">!{mr.iid}</a>{" "}
+              {mr.title}: {message}
+            </div>
+          ))}
+        </Banner>
+      )}
+
+      {error && <Banner onRetry={refresh} className="mx-5 mt-4">{error}</Banner>}
+
+      {warnings.length > 0 && (
+        <Banner tone="warning" onRetry={refresh} className="mx-5 mt-4">
+          {warnings.map((w) => <div key={w}>{w}</div>)}
+        </Banner>
       )}
 
       {/* 2-column grid on 2xl screens */}
@@ -243,8 +242,10 @@ export default function Triage({ data, loading, error, currentUser, view, refres
         {order.map((id) => (
           <div key={id} className="bg-white">
             <BucketSection bucket={BUCKETS[id]} mrs={classified[id]} hint={hints[id]}
-                           currentUserId={currentUser?.id} selectedIds={selectedIds} onToggle={toggleOne}
-                           dataLoaded={data !== null} searchActive={searchQuery.trim().length > 0} />
+                           selectedIds={selectedIds} onToggle={toggleOne}
+                           dataLoaded={data !== null && currentUser !== null}
+                           partial={warnings.length > 0}
+                           searchActive={searchQuery.trim().length > 0} />
           </div>
         ))}
       </div>
