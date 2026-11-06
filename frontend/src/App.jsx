@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import UnreviewedView, { fetchUnreviewedCount } from "./UnreviewedView";
 import TodoView, { fetchTodoCount } from "./TodoView";
 import Sidebar from "./components/Sidebar";
 import LoginScreen from "./components/LoginScreen";
@@ -82,8 +83,9 @@ export default function Root() {
 const BASICS_LABELS = { projects: "your projects", profile: "your GitLab profile", mentions: "your mentions" };
 
 function App({ activeProfile, profiles, jiraUrl, onRefresh }) {
+  const profileId = activeProfile.id;
   const [view, setView]                             = useState({ kind: "triage", bucket: "needs" });
-  const [filters, setFilters]                       = useState(loadFilters);
+  const [filters, setFilters]                       = useState(() => loadFilters(profileId));
   const [needsMyApproval, setNeedsMyApproval]       = useState(false);
   const [page, setPage]                             = useState(1);
   const [data, setData]                             = useState(null);
@@ -94,8 +96,9 @@ function App({ activeProfile, profiles, jiraUrl, onRefresh }) {
   const [mentionedMRs, setMentionedMRs]             = useState([]);
   const [showSettings, setShowSettings]             = useState(false);
   const [todoCount, setTodoCount]                   = useState(0);
+  const [unreviewedCount, setUnreviewedCount]       = useState(0);
   const [triageItems, setTriageItems]               = useState([]);
-  const [selectedProjectIds, setSelectedProjectIds] = useState(loadSelectedProjects);
+  const [selectedProjectIds, setSelectedProjectIds] = useState(() => loadSelectedProjects(profileId));
   const [autoRefreshSecs, setAutoRefreshSecs]       = useState(0);
   const [searchInput, setSearchInput]               = useState(filters.search);
   const [basicsErrors, setBasicsErrors]             = useState({});
@@ -103,21 +106,39 @@ function App({ activeProfile, profiles, jiraUrl, onRefresh }) {
 
   const isMRView = view.kind === "triage" || view.kind === "browse";
 
+  // `lastQueryRef` describes what `data` currently holds, which is how the
+  // loader knows that a re-render asking for the same query needs no fetch. The
+  // two must therefore be emptied together: clearing the list while still
+  // claiming its query is loaded is what left the triage groups reading zero
+  // after a trip to another view.
+  const lastQueryRef = useRef("");
+  const clearData = useCallback(() => {
+    setData(null);
+    lastQueryRef.current = "";
+  }, []);
+
   // clear stale data and search when switching view kinds
   const prevViewKindRef = useRef(view.kind);
   useEffect(() => {
     if (prevViewKindRef.current === view.kind) return;
     prevViewKindRef.current = view.kind;
-    setData(null);
+    clearData();
     setSearchInput("");
+    // the committed query has to go too, otherwise the emptied box still
+    // filters the list you come back to
+    setFilters((prev) => (prev.search ? { ...prev, search: "" } : prev));
   }, [view.kind]);
 
   // debounce browse search
   useEffect(() => {
     if (view.kind !== "browse") return;
     const t = setTimeout(() => {
-      setPage(1);
-      setFilters((prev) => ({ ...prev, search: searchInput }));
+      // Entering a browse view runs this too, with the same empty box. Handing
+      // back `prev` untouched keeps that from looking like a new query.
+      setFilters((prev) =>
+        (prev.search ?? "") === searchInput ? prev : { ...prev, search: searchInput }
+      );
+      setPage((p) => (p === 1 ? p : 1));
     }, 400);
     return () => clearTimeout(t);
   }, [searchInput, view.kind]);
@@ -141,28 +162,31 @@ function App({ activeProfile, profiles, jiraUrl, onRefresh }) {
     trackBasics("projects", api.get("/api/projects")).then((d) => {
       if (!d) return;
       setProjects(d);
-      if (loadSelectedProjects().size === 0) {
+      if (loadSelectedProjects(profileId).size === 0) {
         api.get("/api/config").then((cfg) => {
           if (!cfg.default_group) return;
           const ns = cfg.default_group.toLowerCase();
           const ids = new Set(d.filter((p) => p.path_with_namespace.toLowerCase().startsWith(ns + "/")).map((p) => p.id));
-          if (ids.size > 0) { saveSelectedProjects(ids); setSelectedProjectIds(ids); }
+          if (ids.size > 0) { saveSelectedProjects(profileId, ids); setSelectedProjectIds(ids); }
         }).catch(() => {});
       }
     });
     trackBasics("profile", api.get("/api/me")).then((d) => { if (d) setCurrentUser(d); });
     refreshMentions();
-  }, [trackBasics, refreshMentions]);
+  }, [trackBasics, refreshMentions, profileId]);
 
   useEffect(() => {
     const updateTodoCount = () => fetchTodoCount().then(setTodoCount).catch(() => {});
     loadBasics();
     updateTodoCount();
+    // same project filter the view will use, or the badge would count branches
+    // the list then refuses to show
+    fetchUnreviewedCount([...loadSelectedProjects(profileId)]).then(setUnreviewedCount).catch(() => {});
     const id = setInterval(updateTodoCount, 60_000);
     return () => clearInterval(id);
   }, [loadBasics]);
 
-  useEffect(() => { saveFilters(filters); }, [filters]);
+  useEffect(() => { saveFilters(profileId, filters); }, [profileId, filters]);
 
   const load = useCallback(async (f, p, isTriage, projectIds) => {
     const myLoadId = ++loadIdRef.current;
@@ -185,7 +209,13 @@ function App({ activeProfile, profiles, jiraUrl, onRefresh }) {
       setData(json);
       if (isTriage) setTriageItems(json.items ?? []);
 
-      const refs = (json.items ?? []).map((mr) => ({ project_id: mr.project_id, iid: mr.iid }));
+      // updated_at lets the server cache the expensive post-approval lookups
+      // until the MR actually changes, instead of re-scanning on every refresh
+      const refs = (json.items ?? []).map((mr) => ({
+        project_id: mr.project_id,
+        iid:        mr.iid,
+        updated_at: mr.updated_at ?? "",
+      }));
       if (refs.length > 0) {
         const applyPatch = (patch) => {
           if (loadIdRef.current !== myLoadId) return;
@@ -201,8 +231,18 @@ function App({ activeProfile, profiles, jiraUrl, onRefresh }) {
         };
 
         fillColumn("/api/merge-requests/activities", "activities_after_approval");
-        fillColumn("/api/merge-requests/discussion-stats-batch", "discussion_stats");
-        fillColumn("/api/merge-requests/pipelines-batch", "pipeline");
+
+        // Counters and pipelines ride along with the GraphQL list; asking again
+        // would spend the round trip the switch was meant to save. The thread text
+        // behind the counters is fetched by ThreadsStatus for the one row somebody
+        // actually opens.
+        const items = json.items ?? [];
+        if (!items.some((mr) => "discussion_stats" in mr)) {
+          fillColumn("/api/merge-requests/discussion-stats-batch", "discussion_stats");
+        }
+        if (!items.some((mr) => "pipeline" in mr)) {
+          fillColumn("/api/merge-requests/pipelines-batch", "pipeline");
+        }
       }
     } catch (e) {
       if (loadIdRef.current !== myLoadId || e.status === 401) return;
@@ -212,8 +252,14 @@ function App({ activeProfile, profiles, jiraUrl, onRefresh }) {
     }
   }, []);
 
+  // What the loader watches are objects, and React compares those by identity —
+  // so a re-render that rebuilds `filters` with identical contents used to cost
+  // a second full fetch of the same page. Compare the query instead.
   useEffect(() => {
     if (!isMRView) return;
+    const query = JSON.stringify([view.kind, page, filters, [...selectedProjectIds].sort()]);
+    if (query === lastQueryRef.current) return;
+    lastQueryRef.current = query;
     load(filters, page, view.kind === "triage", selectedProjectIds);
   }, [load, filters, page, isMRView, view.kind, selectedProjectIds]);
 
@@ -228,29 +274,34 @@ function App({ activeProfile, profiles, jiraUrl, onRefresh }) {
   }, [autoRefreshSecs, isMRView, view.kind, load, refreshMentions, filters, page, selectedProjectIds]);
 
   const setFilter = (key) => (e) => {
-    setData(null);
+    clearData();
     setPage(1);
     setFilters((prev) => ({ ...prev, [key]: e.target.value }));
   };
 
-  const navigateBrowse = (state) => {
-    setData(null);
-    setFilters((prev) => ({ ...prev, state }));
+  // The loader skips a query it has already run, so blanking the list on a
+  // navigation that changes nothing would leave it blank. Re-selecting the tab
+  // or project you are already looking at is that case.
+  const goBrowse = (patch) => {
+    const unchanged = view.kind === "browse"
+      && Object.entries(patch).every(([key, value]) => filters[key] === value);
+    if (!unchanged) {
+      clearData();
+      setFilters((prev) => ({ ...prev, ...patch }));
+    }
     setView({ kind: "browse" });
     setPage(1);
   };
+
+  const navigateBrowse = (state) => goBrowse({ state });
 
   const handleSettingsClose = () => {
     setShowSettings(false);
-    setSelectedProjectIds(loadSelectedProjects());
+    setSelectedProjectIds(loadSelectedProjects(profileId));
   };
 
-  const handleProjectClick = (projectId) => {
-    setData(null);
-    setFilters((prev) => ({ ...prev, project_id: String(projectId), state: "opened" }));
-    setView({ kind: "browse" });
-    setPage(1);
-  };
+  const handleProjectClick = (projectId) =>
+    goBrowse({ project_id: String(projectId), state: "opened" });
 
   const visibleProjects = (selectedProjectIds.size > 0
     ? projects.filter((p) => selectedProjectIds.has(p.id))
@@ -263,7 +314,13 @@ function App({ activeProfile, profiles, jiraUrl, onRefresh }) {
   ];
 
   const counts = useMemo(() => {
-    const c = { needs: 0, approved: 0, mine: 0, mention: mentionedMRs.length };
+    // a mention on a merge request already in a bucket is shown on its row, so
+    // counting it here as well would count the same thing twice
+    const listed = new Set(triageItems.map((mr) => mr.id));
+    const c = {
+      needs: 0, approved: 0, mine: 0,
+      mention: mentionedMRs.filter((mr) => !listed.has(mr.id)).length,
+    };
     if (!currentUser) return c;
     for (const mr of triageItems) {
       const b = classifyMR(mr, currentUser.id);
@@ -280,12 +337,17 @@ function App({ activeProfile, profiles, jiraUrl, onRefresh }) {
     return c;
   }, [triageItems]);
 
-  const totalOpen = triageItems.filter((m) => m.state === "opened").length;
+  // "All open" navigates to Browse, which applies scope and the single-project
+  // filter — the triage tally only describes that list when neither is narrowing
+  // it, so drop the number rather than show one that disagrees with the page.
+  const totalOpen = filters.scope === "all" && !filters.project_id
+    ? triageItems.filter((m) => m.state === "opened").length
+    : null;
   const basicsFailures = Object.entries(basicsErrors);
 
   return (
     <div className="flex h-screen bg-gray-50 overflow-hidden">
-      {showSettings && <ProjectSettings projects={projects} onClose={handleSettingsClose} />}
+      {showSettings && <ProjectSettings projects={projects} profileId={profileId} onClose={handleSettingsClose} />}
 
       <Sidebar
         counts={counts}
@@ -300,6 +362,7 @@ function App({ activeProfile, profiles, jiraUrl, onRefresh }) {
         currentUser={currentUser}
         projectCounts={projectCounts}
         todosCount={todoCount}
+        unreviewedCount={unreviewedCount}
         activeProfile={activeProfile}
         profiles={profiles}
         jiraUrl={jiraUrl}
@@ -376,7 +439,9 @@ function App({ activeProfile, profiles, jiraUrl, onRefresh }) {
         )}
 
         {view.kind === "todo" ? (
-          <TodoView />
+          <TodoView onCountChange={setTodoCount} />
+        ) : view.kind === "branches" ? (
+          <UnreviewedView selectedProjectIds={selectedProjectIds} onCount={setUnreviewedCount} />
         ) : view.kind === "releases" ? (
           <Releases
             jiraUrl={jiraUrl} connected={activeProfile.jiraConnected} onConnected={onRefresh}

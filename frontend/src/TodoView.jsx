@@ -158,7 +158,7 @@ function GroupHeader({ label, count, hint }) {
 
 /* ─────────────────────────── main component ─────────────────────────── */
 
-export default function TodoView() {
+export default function TodoView({ onCountChange }) {
   const [todos, setTodos]      = useState([]);
   const [loading, setLoading]  = useState(false);
   const [error, setError]      = useState(null);
@@ -171,13 +171,15 @@ export default function TodoView() {
     setLoading(true);
     setError(null);
     try {
-      setTodos(await api.get("/api/todos?state=pending&per_page=100"));
+      const pending = await api.get("/api/todos?state=pending&per_page=100");
+      setTodos(pending);
+      onCountChange?.(pending.length);
     } catch (e) {
       if (e.status !== 401) setError(e.message);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [onCountChange]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -191,7 +193,9 @@ export default function TodoView() {
     setBusyId(id);
     try {
       await api.post(`/api/todos/${id}/done`);
-      setTodos((prev) => prev.filter((t) => t.id !== id));
+      const remaining = todos.filter((t) => t.id !== id);
+      setTodos(remaining);
+      onCountChange?.(remaining.length);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -255,7 +259,7 @@ export default function TodoView() {
                 <FilterPill key={key} active={actionFilter === key}
                             onClick={() => setAct(actionFilter === key ? "" : key)}
                             count={n} urgent={urgent}>
-                  {meta.label.replace(" you","").replace(/^[a-z]/,(c) => c.toUpperCase())}
+                  {meta.label.replace(/ your?\b/, "").replace(/^[a-z]/, (c) => c.toUpperCase())}
                 </FilterPill>
               );
             })}

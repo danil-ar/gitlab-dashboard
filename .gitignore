@@ -2,6 +2,10 @@
 docker-compose.override.yml
 .DS_Store
 
+# Windows attaches these alternate data streams to anything that arrived from
+# another machine; copying the tree through Windows makes them visible as files
+*:Zone.Identifier
+
 # frontend
 frontend/node_modules/
 frontend/dist/

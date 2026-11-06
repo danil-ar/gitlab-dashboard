@@ -18,7 +18,7 @@ const BROWSE_ICON = "w-3.5 h-3.5 shrink-0";
 
 export default function Sidebar({
   counts, totalOpen, view, setView, navigateBrowse, filters, projects,
-  selectedProjectIds, openProjectSettings, currentUser, projectCounts, todosCount,
+  selectedProjectIds, openProjectSettings, currentUser, projectCounts, todosCount, unreviewedCount,
   activeProfile, profiles, jiraUrl, onRefresh, onProjectClick,
 }) {
   const [showProfileMenu, setShowProfileMenu] = useState(false);
@@ -99,6 +99,19 @@ export default function Sidebar({
         {triageItem("approved", "You approved",        counts.approved, "text-green-600")}
         {triageItem("mine",     "Your open MRs",       counts.mine,     "text-blue-600")}
         {triageItem("mention",  "Mentioned you",       counts.mention,  "text-purple-500")}
+        <button
+          onClick={() => setView({ kind: "branches" })}
+          title="Branches you pushed that no merge request was opened for"
+          className={navClass(view.kind === "branches")}
+        >
+          <Icon name="branch" className="w-3.5 h-3.5 shrink-0 text-gray-400" />
+          <span className="flex-1 text-left truncate">No merge request</span>
+          {unreviewedCount > 0 && (
+            <span className="text-[11px] font-semibold tabular-nums px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 shrink-0">
+              {unreviewedCount}
+            </span>
+          )}
+        </button>
         <button onClick={() => setView({ kind: "todo" })} className={navClass(view.kind === "todo")}>
           <Icon name="todo" className="w-3.5 h-3.5 shrink-0 text-blue-400" />
           <span className="flex-1 text-left">To-Do List</span>

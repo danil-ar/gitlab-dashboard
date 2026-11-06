@@ -24,6 +24,7 @@ const GLYPHS = {
   circleX:     <><circle cx="8" cy="8" r="5.5" /><path d="M5.5 5.5l5 5m0-5l-5 5" /></>,
   circlePlus:  <><circle cx="8" cy="8" r="5.5" /><path d="M8 5.5v5M5.5 8h5" /></>,
   signOut:     <path d="M6 2H3a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3M10.5 11l3-3-3-3M13.5 8H6" />,
+  branch:      <path d="M4.5 3v10M11.5 5v2c0 3-7 1-7 4M4.5 3a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Zm0 10a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3Zm7-10a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3Z" />,
   tag:         <path d="M2.5 2.5h5l6 6-5 5-6-6v-5Z M5.5 5.5v.01" />,
 };
 

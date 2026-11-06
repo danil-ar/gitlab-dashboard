@@ -1,19 +1,14 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
+import { copyText } from "../utils/reviewMessage";
 
 export default function CopyBlock({ title, text }) {
   const [copied, setCopied] = useState(false);
-  const textRef = useRef(null);
 
   const copy = async () => {
-    // navigator.clipboard exists only on HTTPS and localhost; the dashboard may run on plain HTTP.
-    if (navigator.clipboard) {
-      await navigator.clipboard.writeText(text);
-    } else {
-      window.getSelection().selectAllChildren(textRef.current);
-      document.execCommand("copy");
+    if (await copyText(text)) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
     }
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
   };
 
   return (
@@ -30,7 +25,6 @@ export default function CopyBlock({ title, text }) {
       </div>
       {/* Wraps and grows with its content: a fixed-size field clips lines behind Windows scrollbars. */}
       <pre
-        ref={textRef}
         className="font-mono text-[11px] leading-relaxed border border-gray-200 rounded-md p-2 bg-gray-50 text-gray-700 whitespace-pre-wrap break-words"
       >
         {text || <span className="text-gray-400">Nothing to do</span>}

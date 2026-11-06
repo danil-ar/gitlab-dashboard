@@ -11,11 +11,11 @@ function projectName(p) {
   return parts[parts.length - 1];
 }
 
-export default function ProjectSettings({ projects, onClose }) {
+export default function ProjectSettings({ projects, profileId, onClose }) {
   const [search, setSearch]     = useState("");
-  const [selected, setSelected] = useState(loadSelectedProjects);
+  const [selected, setSelected] = useState(() => loadSelectedProjects(profileId));
 
-  const save = (next) => { saveSelectedProjects(next); return next; };
+  const save = (next) => { saveSelectedProjects(profileId, next); return next; };
 
   const toggle = (id) => setSelected((prev) => {
     const next = new Set(prev);

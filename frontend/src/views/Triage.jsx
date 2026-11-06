@@ -12,12 +12,6 @@ import RefreshButton from "../components/RefreshButton";
 
 const BUCKET_IDS = ["needs", "approved", "mine", "mention"];
 
-// The first copy wins. Mentions come last, and their copies lack the data loaded for the main list.
-function uniqueById(mrs) {
-  const seen = new Set();
-  return mrs.filter((mr) => !seen.has(mr.id) && seen.add(mr.id));
-}
-
 const approvalUrl = (mr, action) => `/api/merge-requests/${mr.project_id}/${mr.iid}/${action}`;
 
 async function reapprove(mr) {
@@ -44,22 +38,38 @@ export default function Triage({ data, loading, error, currentUser, view, refres
     return next;
   });
 
+  // MRs without diff stats (the REST paths do not carry them) sort last rather
+  // than pretending to be empty ones.
+  const changedLines = (mr) => mr.diff_stats
+    ? (mr.diff_stats.additions ?? 0) + (mr.diff_stats.deletions ?? 0)
+    : Number.POSITIVE_INFINITY;
+
   const sortFn = useMemo(() => ({
-    newest: (a, b) => new Date(b.updated_at) - new Date(a.updated_at),
-    oldest: (a, b) => new Date(a.updated_at) - new Date(b.updated_at),
-    title:  (a, b) => a.title.localeCompare(b.title),
+    newest:  (a, b) => new Date(b.updated_at) - new Date(a.updated_at),
+    oldest:  (a, b) => new Date(a.updated_at) - new Date(b.updated_at),
+    title:   (a, b) => a.title.localeCompare(b.title),
+    size:    (a, b) => changedLines(a) - changedLines(b),
   })[sortBy], [sortBy]);
 
   const all = data?.items ?? [];
   const classified = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     const match = (mr) => !q || mr.title.toLowerCase().includes(q);
-    const out = { needs: [], approved: [], mine: [], mention: mentionedMRs.filter(match) };
+    // Being tagged is not a fifth kind of merge request, it is something that
+    // happened to one. If it is already on this screen the row says so; the
+    // bucket is left holding the mentions that would otherwise be invisible —
+    // other people's merge requests, unselected projects, closed ones.
+    const listed = new Set(all.map((mr) => mr.id));
+    const tagged = new Set(mentionedMRs.map((mr) => mr.id));
+    const out = {
+      needs: [], approved: [], mine: [],
+      mention: mentionedMRs.filter((mr) => match(mr) && !listed.has(mr.id)),
+    };
     if (!currentUser) return out;
     for (const mr of all) {
       if (!match(mr)) continue;
       const b = classifyMR(mr, currentUser.id);
-      if (b) out[b].push(mr);
+      if (b) out[b].push(tagged.has(mr.id) ? { ...mr, mentions_you: true } : mr);
     }
     BUCKET_IDS.forEach((k) => out[k].sort(sortFn));
     return out;
@@ -67,7 +77,7 @@ export default function Triage({ data, loading, error, currentUser, view, refres
 
   const order = [view.bucket, ...BUCKET_IDS.filter((k) => k !== view.bucket)];
 
-  const allVisible = uniqueById(BUCKET_IDS.flatMap((id) => classified[id]));
+  const allVisible = BUCKET_IDS.flatMap((id) => classified[id]);
   const allSelected = allVisible.length > 0 && allVisible.every((mr) => selectedIds.has(mr.id));
 
   const toggleAll = () => {
@@ -212,6 +222,7 @@ export default function Triage({ data, loading, error, currentUser, view, refres
             >
               <option value="newest">Newest first</option>
               <option value="oldest">Oldest first</option>
+              <option value="size">Smallest first</option>
               <option value="title">Title A→Z</option>
             </select>
           </div>
@@ -237,10 +248,14 @@ export default function Triage({ data, loading, error, currentUser, view, refres
         </Banner>
       )}
 
-      {/* 2-column grid on 2xl screens */}
-      <div className="2xl:grid 2xl:grid-cols-2 2xl:gap-x-px 2xl:bg-gray-200">
+      {/* Two columns on 2xl. Deliberately CSS multi-column rather than a 2-col
+          grid: a grid ties both cells of a row to the taller one, which is what
+          left the big blank gaps under the shorter bucket. The divider is a
+          column-rule, not a background showing through the gap — a background
+          would paint the tail of the shorter column grey. */}
+      <div className="bg-white 2xl:columns-2 2xl:gap-px 2xl:[column-rule:1px_solid_#e5e7eb]">
         {order.map((id) => (
-          <div key={id} className="bg-white">
+          <div key={id} className="break-inside-avoid">
             <BucketSection bucket={BUCKETS[id]} mrs={classified[id]} hint={hints[id]}
                            selectedIds={selectedIds} onToggle={toggleOne}
                            dataLoaded={data !== null && currentUser !== null}

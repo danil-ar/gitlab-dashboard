@@ -1,10 +1,69 @@
+import { useState } from "react";
+
 import Avatar from "./Avatar";
+import CommitPreview from "./CommitPreview";
 import PipelineStatus from "./PipelineStatus";
 import ThreadsStatus, { ThreadPreview } from "./ThreadsStatus";
 import { Icon } from "./icons";
 import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { timeAgo } from "../utils/timeAgo";
+import { MERGE_STATUS, STALE_DAYS } from "../constants";
+import { copyText, issueUrl, reviewMessage } from "../utils/reviewMessage";
+
+/** Changed lines, as a reviewer reads them: how big a bite is this. */
+function DiffSize({ stats }) {
+  if (!stats || (stats.additions == null && stats.deletions == null)) return null;
+  const files = stats.files;
+  return (
+    <span
+      className="shrink-0 tabular-nums font-mono"
+      title={files != null ? `${files} file${files === 1 ? "" : "s"} changed` : undefined}
+    >
+      <span className="text-green-600">+{stats.additions ?? 0}</span>
+      <span className="text-red-500 ml-1">−{stats.deletions ?? 0}</span>
+    </span>
+  );
+}
+
+/** Copies the "ready for review" announcement for this MR, in the shape the
+ *  team already writes by hand. */
+function CopyMessage({ mr }) {
+  const [copied, setCopied] = useState(false);
+
+  const onClick = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (await copyText(reviewMessage(mr))) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }
+  };
+
+  return (
+    <button
+      onClick={onClick}
+      title="Copy the review announcement for chat"
+      className={`shrink-0 p-1 rounded transition-opacity ${
+        copied ? "opacity-100 text-green-600" : "opacity-0 group-hover:opacity-100 text-gray-400 hover:text-gray-700"
+      }`}
+    >
+      {copied ? (
+        <svg viewBox="0 0 16 16" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <path d="M3 8.5 6.5 12 13 4.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      ) : (
+        <svg viewBox="0 0 16 16" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" />
+          <path d="M10.5 3.5h-7a1 1 0 0 0-1 1v7" strokeLinecap="round" />
+        </svg>
+      )}
+    </button>
+  );
+}
+
+const isStale = (iso) =>
+  iso && (Date.now() - new Date(iso).getTime()) / 86_400_000 >= STALE_DAYS;
 
 export default function MRRow({ mr, bucket, selected, onToggle }) {
   const cleanTitle = mr.title.replace(/^(Draft|WIP):\s*/i, "");
@@ -27,16 +86,18 @@ export default function MRRow({ mr, bucket, selected, onToggle }) {
 
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5 min-w-0">
-          <a href={mr.web_url} target="_blank" rel="noopener noreferrer"
-             className="text-sm font-semibold text-gray-900 group-hover:text-blue-700 hover:underline truncate transition-colors">
+          {/* a title the row had to cut should still be readable without
+              opening the merge request */}
+          <a href={mr.web_url} target="_blank" rel="noopener noreferrer" title={cleanTitle}
+             className="min-w-[7rem] text-sm font-semibold text-gray-900 group-hover:text-blue-700 hover:underline truncate transition-colors">
             {cleanTitle}
           </a>
-          {isDraft && <Badge variant="secondary" className="shrink-0">Draft</Badge>}
-          {mr.has_conflicts && <Badge variant="destructive" className="shrink-0">conflicts</Badge>}
           {activities && (() => {
+            const previews = activities.new_thread_previews ?? [];
             const parts = [
               activities.commits?.length > 0 && `+${activities.commits.length} commit${activities.commits.length > 1 ? "s" : ""}`,
               activities.new_threads > 0 && `+${activities.new_threads} thread${activities.new_threads > 1 ? "s" : ""}`,
+              activities.new_replies > 0 && `+${activities.new_replies} ${activities.new_replies > 1 ? "replies" : "reply"}`,
             ].filter(Boolean);
             return (
               <Popover>
@@ -54,35 +115,26 @@ export default function MRRow({ mr, bucket, selected, onToggle }) {
                   className="w-[400px] max-h-[420px] overflow-y-auto p-0 rounded-xl border-gray-200 bg-white shadow-xl [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200 [&::-webkit-scrollbar-thumb]:rounded-full"
                 >
                   <div className="p-2.5 space-y-3">
-                    {activities.commits?.length > 0 && (() => {
-                      const projectUrl = mr.web_url?.split("/-/")[0] ?? "";
-                      return (
-                        <div>
-                          <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-amber-600 mb-1.5">
-                            <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
-                            New commits · {activities.commits.length}
-                          </div>
-                          <div className="space-y-0.5">
-                            {activities.commits.map((c) => (
-                              <a key={c.short_id} href={`${projectUrl}/-/commit/${c.id}`} target="_blank" rel="noopener noreferrer"
-                                 className="flex gap-2 items-baseline py-1 px-1.5 hover:bg-gray-50 rounded-md transition-colors">
-                                <code className="text-amber-700 shrink-0 text-[10px] font-mono">{c.short_id}</code>
-                                <span className="text-gray-600 text-[12px] truncate">{c.title}</span>
-                              </a>
-                            ))}
-                          </div>
+                    {activities.commits?.length > 0 && (
+                      <div>
+                        <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-amber-600 mb-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
+                          New commits · {activities.commits.length}
                         </div>
-                      );
-                    })()}
-                    {activities.new_threads > 0 && (
+                        <div className="space-y-1.5">
+                          {activities.commits.map((c) => <CommitPreview key={c.id} c={c} />)}
+                        </div>
+                      </div>
+                    )}
+                    {previews.length > 0 && (
                       <div className={activities.commits?.length > 0 ? "border-t border-gray-100 pt-2.5" : ""}>
                         <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-orange-500 mb-1.5">
                           <span className="w-1.5 h-1.5 rounded-full bg-orange-500 shrink-0" />
-                          New threads · {activities.new_threads}
+                          New discussion · {previews.length}
                         </div>
                         <div className="space-y-1.5">
-                          {(activities.new_thread_previews ?? []).map((p, i) => (
-                            <ThreadPreview key={i} p={p} url={mr.web_url} />
+                          {previews.map((p) => (
+                            <ThreadPreview key={p.note_id} p={p} url={mr.web_url} />
                           ))}
                         </div>
                       </div>
@@ -92,19 +144,84 @@ export default function MRRow({ mr, bucket, selected, onToggle }) {
               </Popover>
             );
           })()}
+          {mr.mentions_you && (
+            <Badge className="shrink-0 bg-purple-50 text-purple-700 border-purple-300"
+                   title="Somebody tagged you in a comment here">
+              tagged you
+            </Badge>
+          )}
+          {isDraft && <Badge variant="secondary" className="shrink-0">Draft</Badge>}
+          {mr.has_conflicts && <Badge variant="destructive" className="shrink-0">conflicts</Badge>}
+          {!isDraft && !mr.has_conflicts && MERGE_STATUS[mr.detailed_merge_status] && (
+            <Badge
+              className={`shrink-0 ${MERGE_STATUS[mr.detailed_merge_status].cls}`}
+              title={MERGE_STATUS[mr.detailed_merge_status].hint}
+            >
+              {MERGE_STATUS[mr.detailed_merge_status].label}
+            </Badge>
+          )}
+          {/* One label and a count for the rest. Whether the others would have
+              fitted is a question only a measured layout could answer, and a
+              row whose width depends on how many tags somebody added is worse
+              than a row that always looks the same. The full list is one hover
+              away. */}
+          {mr.labels?.slice(0, 1).map((l) => {
+            // REST hands labels down as plain strings, GraphQL as objects with
+            // the colour the team chose in GitLab. The filled colour is also
+            // what keeps them apart from the state chips beside them: those are
+            // facts the dashboard computed, these are notes people wrote.
+            const title = typeof l === "string" ? l : l.title;
+            const style = typeof l === "string" || !l.color ? undefined
+              : { backgroundColor: l.color, color: l.text_color, borderColor: l.color };
+            return (
+              // Badge is a centred flex box, so squeezing it clips the text at
+              // both ends and never shows an ellipsis. It keeps its width; the
+              // cut, when a label name is genuinely long, happens on the text
+              // inside, where text-overflow works.
+              <Badge key={title} variant="outline" style={style}
+                     className="max-w-[9rem] text-[10px] text-gray-500 h-4 px-1.5 py-0">
+                <span className="truncate">{title}</span>
+              </Badge>
+            );
+          })}
+          {mr.labels?.length > 1 && (
+            <span className="text-[10px] text-gray-400 shrink-0 cursor-help"
+                  title={mr.labels.slice(1).map((l) => (typeof l === "string" ? l : l.title)).join("\n")}>
+              +{mr.labels.length - 1}
+            </span>
+          )}
+          <CopyMessage mr={mr} />
         </div>
-        <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-gray-500 min-w-0 flex-wrap">
+        <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-gray-500 min-w-0 flex-nowrap overflow-hidden">
           <span className="font-mono shrink-0 truncate max-w-[200px]">{proj}<span className="text-gray-400">!{mr.iid}</span></span>
           <span className="text-gray-300 shrink-0">·</span>
-          <span className="shrink-0">by <span className="text-gray-700">{mr.author?.name}</span></span>
+          {/* The one thing on this line that can lose its tail and still be
+              understood: "Богданов Ярослав А…" names the same person, while a
+              cut branch name names nothing. So the deficit is taken here. */}
+          <span className="min-w-0 truncate" title={mr.author?.name}>
+            by <span className="text-gray-700">{mr.author?.name}</span>
+          </span>
           <span className="text-gray-300 shrink-0">·</span>
           <span className="flex items-center gap-1 shrink-0">
-            <code className="bg-gray-100 px-1 rounded text-[10px] max-w-[100px] truncate">{mr.source_branch}</code>
+            {issueUrl(mr) ? (
+              <a href={issueUrl(mr)} target="_blank" rel="noopener noreferrer"
+                 title="Open the issue in the tracker"
+                 className="bg-gray-100 hover:bg-blue-50 hover:text-blue-700 px-1 rounded text-[10px] max-w-[100px] truncate font-mono transition-colors">
+                {mr.source_branch}
+              </a>
+            ) : (
+              <code className="bg-gray-100 px-1 rounded text-[10px] max-w-[100px] truncate">{mr.source_branch}</code>
+            )}
             <span className="text-gray-400">→</span>
             <code className="bg-gray-100 px-1 rounded text-[10px]">{mr.target_branch}</code>
           </span>
-          {mr.labels?.slice(0, 3).map((l) => <Badge key={l} variant="outline" className="text-[10px] text-gray-500 h-4 px-1.5 py-0">{l}</Badge>)}
         </div>
+      </div>
+
+      {/* Its own column, not part of the meta line: sizes are only worth showing
+          if you can compare them down the list at a glance. */}
+      <div className="w-[88px] hidden lg:flex justify-end shrink-0 text-[11px]">
+        <DiffSize stats={mr.diff_stats} />
       </div>
 
       <div className="w-[72px] hidden md:flex shrink-0">
@@ -112,7 +229,7 @@ export default function MRRow({ mr, bucket, selected, onToggle }) {
       </div>
 
       <div className="w-[48px] hidden md:flex shrink-0">
-        <ThreadsStatus stats={mr.discussion_stats} mrUrl={mr.web_url} />
+        <ThreadsStatus stats={mr.discussion_stats} projectId={mr.project_id} iid={mr.iid} mrUrl={mr.web_url} />
       </div>
 
       <div className="w-[96px] hidden md:flex items-center gap-1.5 shrink-0">
@@ -128,7 +245,9 @@ export default function MRRow({ mr, bucket, selected, onToggle }) {
             <span className="text-xs text-green-700 font-semibold tabular-nums">{mr.approved_by_users.length}</span>
           </>
         ) : (
-          <span className="text-[11px] text-gray-400">{mr.approved_by_users === null ? "unknown" : "no approvals"}</span>
+          <span className="text-[11px] text-gray-400" title={mr.approved_by_users === null ? "Could not load the approvals" : "No approvals yet"}>
+            {mr.approved_by_users === null ? "unknown" : "—"}
+          </span>
         )}
       </div>
 
@@ -139,7 +258,9 @@ export default function MRRow({ mr, bucket, selected, onToggle }) {
         {!mr.assignees?.length && <span className="text-[11px] text-gray-400">—</span>}
       </div>
 
-      <span className="w-[56px] text-right text-[11px] text-gray-400 tabular-nums shrink-0">
+      <span className={`w-[56px] text-right text-[11px] tabular-nums shrink-0 ${
+        isStale(mr.updated_at) ? "text-gray-600 font-medium" : "text-gray-400"
+      }`}>
         {timeAgo(mr.updated_at)}
       </span>
     </div>
